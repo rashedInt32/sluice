@@ -2,6 +2,8 @@
 
 tmux-style prefix keys and session switching on top of [zmx](https://github.com/neurosnap/zmx), with raw PTY passthrough.
 
+![The session picker on prefix+f: sessions on top, opened on the current one, with the highlighted session's screen below](docs/picker.png)
+
 I wanted to leave tmux without giving up the habits: `prefix+f` to pick a session, `prefix+1..9` to jump, `prefix+0` for the last one, a sessionizer on `prefix+s`, worktrees on `prefix+g`. tmux pays for those keys by parsing every byte of output into its own screen and re-emitting it. That is where images, the kitty keyboard protocol and clean truecolor get lost.
 
 sluice does not touch output. zmx holds the shells and restores their screen on reattach. Ghostty (or any terminal) renders the real bytes. sluice sits only on the input side, reads the keyboard before forwarding it, and acts on the prefix. One blocked `poll(2)` when idle, one `read` and one `write` per chunk otherwise.
