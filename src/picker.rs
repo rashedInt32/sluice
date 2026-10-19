@@ -88,6 +88,25 @@ pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
         .collect()
 }
 
+/// Open the picker with the cursor on row `index` (1-based), the session you
+/// are in, the way tmux's own session list does: you see where you are, j/k
+/// move from there, and a stray Enter keeps you put.
+///
+/// `--sync` holds the first draw until the list is in, so `start:pos` lands on
+/// a real row instead of being clamped against an empty one. `--track` then
+/// keeps the cursor on the same session when ctrl-x or ctrl-d redraws the list
+/// and the rows above it shift.
+pub fn focus_binds(index: Option<usize>) -> Vec<String> {
+    match index {
+        Some(n) if n >= 1 => vec![
+            "--sync".into(),
+            "--track".into(),
+            format!("--bind=start:pos({n})"),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// Extra keys for a picker whose rows are sessions: kill one, or free it from
 /// whatever pane is holding it, then redraw the list in place.
 ///
@@ -290,6 +309,17 @@ mod tests {
         let b = session_binds_with("S", "").join("\n");
         assert!(b.contains("reload(sleep 0.2; S list --rows)"), "{b}");
         assert!(!b.contains("--current"), "{b}");
+    }
+
+    #[test]
+    fn the_picker_opens_on_the_current_session() {
+        assert_eq!(
+            focus_binds(Some(3)),
+            ["--sync", "--track", "--bind=start:pos(3)"]
+        );
+        // no current session (the startup picker): plain top-of-list
+        assert!(focus_binds(None).is_empty());
+        assert!(focus_binds(Some(0)).is_empty(), "there is no row 0");
     }
 
     #[test]

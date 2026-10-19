@@ -530,7 +530,9 @@ fn handoff_passes_the_prefix_to_the_program_while_its_pid_lives() {
     // prefix+d is no longer a chord: both bytes reach cat
     p.send(b"\x01d\r");
     p.expect("^Ad", Duration::from_secs(5));
-    assert_eq!(clients(&name), Some(1), "still attached");
+    // a real detach leaves the count at 0, so waiting still catches it; an
+    // instant read could catch zmx mid-update under the parallel test load
+    p.wait_clients(&name, Some(1), Duration::from_secs(3));
 
     // a dead pid ends the handoff by itself
     sluice_cmd(
@@ -583,7 +585,7 @@ fn ctrl_backslash_reaches_the_program_instead_of_detaching() {
     p.drain(Duration::from_millis(400));
     p.send(b"\x1c\r"); // ctrl+\ : zmx's own detach key, disabled by sluice
     p.expect("^\\", Duration::from_secs(5));
-    assert_eq!(clients(&name), Some(1), "still attached after ctrl+\\");
+    p.wait_clients(&name, Some(1), Duration::from_secs(3)); // still attached after ctrl+\
     p.send(b"\x04"); // EOF ends cat
     p.drain(Duration::from_millis(300));
     p.send(b"\x01d");
@@ -890,6 +892,61 @@ fn killing_the_session_you_are_in_falls_back_to_another() {
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     kill_session(&other);
     let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
+fn the_session_picker_opens_on_the_current_session() {
+    if !zmx_present() || !fzf_present() {
+        return;
+    }
+    // A private zmx directory: only this test's sessions exist in it. Without
+    // the fix the cursor would sit on row 1, and on a shared machine row 1 is
+    // somebody's real session -- a failing test must not be able to land there.
+    let zdir = std::env::temp_dir().join(format!("sluice-zdir-{}", std::process::id()));
+    std::fs::create_dir_all(&zdir).unwrap();
+    let z = zdir.to_str().unwrap().to_string();
+    let first = uniq("pf1");
+    let second = uniq("pf2");
+
+    let p = spawn(&[&first], &[("ZMX_DIR", &z)]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    std::thread::sleep(Duration::from_millis(1100)); // a later creation second, so `second` is row 2
+
+    let p = spawn(&[&second], &[("ZMX_DIR", &z)]);
+    p.expect("$", Duration::from_secs(5));
+
+    // open the picker and accept straight away: the cursor must already be on
+    // `second`, the session this pane shows, not on `first` at the top
+    p.send(b"\x01f");
+    p.expect("session >", Duration::from_secs(5));
+    p.drain(Duration::from_millis(400));
+    p.send(b"\r");
+    p.drain(Duration::from_millis(800));
+    assert_eq!(
+        pane_window(&p, "pf"),
+        second,
+        "Enter on open keeps you where you are"
+    );
+
+    // and moving one row up from there reaches `first`
+    p.send(b"\x01f");
+    p.expect("session >", Duration::from_secs(5));
+    p.drain(Duration::from_millis(400));
+    p.send(b"k\r");
+    p.drain(Duration::from_millis(800));
+    assert_eq!(pane_window(&p, "pk"), first, "k moves from the current row");
+
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    for s in [&first, &second] {
+        let _ = Command::new("zmx")
+            .args(["kill", s])
+            .env("ZMX_DIR", &z)
+            .output();
+    }
+    let _ = std::fs::remove_dir_all(&zdir);
 }
 
 /// Name of the window the pane is showing, read from inside it.

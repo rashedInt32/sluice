@@ -451,12 +451,16 @@ impl Runner {
                     }
                     let lines = picker::session_lines(&groups, &current);
                     let header = "j/k move · 1-9 jump · enter switch · ctrl-x kill · ctrl-d detach · i search · q back";
+                    // start on the session this pane is showing
+                    let here = groups.iter().position(|g| g.name == current).map(|i| i + 1);
+                    let mut extra = picker::session_binds(&current);
+                    extra.extend(picker::focus_binds(here));
                     picker::fzf_with(
                         &lines,
                         "session > ",
                         header,
                         Some("zmx history {2} --vt --screen"),
-                        &picker::session_binds(&current),
+                        &extra,
                     )
                     .map(Choice::named)
                 });
