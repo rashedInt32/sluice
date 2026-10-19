@@ -1,0 +1,19 @@
+[package]
+name = "sluice"
+version = "0.1.0"
+edition = "2021"
+description = "tmux-style prefix keys and session switching on top of zmx, with raw PTY passthrough"
+license = "MIT"
+
+[dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[dev-dependencies]
+libc = "0.2"

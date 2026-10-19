@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# agents — one row per running Claude Code agent, paired with the zmx session
+# it lives in.
+#
+# Reads ~/.claude/sessions/<pid>.json rather than shelling out to
+# `claude agents --json`, which costs ~210ms of Node startup. `statusUpdatedAt`
+# gives last activity directly, so no transcript glob is needed.
+#
+# The session an agent belongs to comes from its own environment: zmx exports
+# ZMX_SESSION into every session and every child inherits it -- through the
+# shell, through an editor, into Claude. So an agent inside an embedded
+# terminal (nvim :terminal, sidekick.nvim) needs no special handling; it
+# reports the session of the editor hosting it. Nothing here walks the process
+# tree, and nothing keys off tty: a tty is recycled by the OS, whereas a zmx
+# session name is chosen and unique while it lives.
+#
+# A session file outlives an agent killed with SIGKILL, so a recycled PID could
+# surface a bogus row that ctrl-x would then kill. The command line is checked
+# to rule that out: the whole command, not argv[0], so an install that runs
+# Claude as `node .../cli.js` is recognised while a bare node is not.
+#
+#   Row: rank \t session \t pid \t icon \t age \t path
+set -uo pipefail
+
+base="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
+
+# pid \t status \t cwd \t statusUpdatedAt(ms)
+rows="$(jq -r -s '
+  .[] | select(.kind == "interactive")
+      | [.pid, .status, .cwd, (.statusUpdatedAt // .updatedAt // 0)]
+      | @tsv' "$base"/sessions/*.json 2>/dev/null)"
+
+# Fallback: no session files (older Claude Code, or the layout moved).
+if [ -z "$rows" ]; then
+  rows="$(claude agents --json 2>/dev/null |
+    jq -r '.[] | select(.kind == "interactive") | [.pid, .status, .cwd, 0] | @tsv' 2>/dev/null)"
+fi
+[ -n "$rows" ] || exit 0
+
+pids="$(printf '%s\n' "$rows" | cut -f1 | paste -sd, -)"
+
+# E: pid \t session \t cmdline -- one row per agent, read from its environment.
+agent_env() {
+  if [ -r /proc/self/environ ]; then
+    # Linux: read the environment directly, no ps. cmdline is NUL separated
+    # and carries no environment, so it needs no splitting.
+    printf '%s\n' "$rows" | cut -f1 | while IFS= read -r p; do
+      [ -r "/proc/$p/environ" ] || continue
+      tr '\0' '\n' <"/proc/$p/environ" |
+        awk -v p="$p" -v cmd="$(tr '\0' ' ' <"/proc/$p/cmdline" 2>/dev/null)" '
+          /^ZMX_SESSION=/ { s = substr($0, 13) }
+          END             { if (s != "") print "E\t" p "\t" s "\t" cmd }'
+    done
+  else
+    # BSD and macOS: -E appends the environment to the command column, so the
+    # command ends at the first NAME=... token.
+    ps -Eww -o pid=,command= -p "$pids" 2>/dev/null | awk '{
+      pid = $1; s = ""; cmd = ""; in_env = 0
+      for (i = 2; i <= NF; i++) {
+        if (!in_env && $i ~ /^[A-Z_][A-Z0-9_]*=/) in_env = 1
+        if (!in_env)                       { cmd = cmd " " $i }
+        else if ($i ~ /^ZMX_SESSION=/)     { s = substr($i, 13) }
+      }
+      if (s != "") print "E\t" pid "\t" s "\t" cmd
+    }'
+  fi
+}
+
+{
+  agent_env
+  zmx list --short 2>/dev/null | sed $'s/^/S\t/'
+  printf '%s\n' "$rows" | sed $'s/^/A\t/'
+} | awk -F'\t' -v now="$(date +%s)" -v home="$HOME" '
+  $1 == "E" { sess_of[$2] = $3; cmd_of[$2] = $4; next }
+  $1 == "S" { live[$2] = 1; next }
+  $1 == "A" {
+    pid = $2; status = $3; cwd = $4; upd = $5
+
+    s = sess_of[pid]
+    if (s == "" || !(s in live)) next            # not in a session we can reach
+    if (cmd_of[pid] !~ /claude/) next            # stale file on a recycled pid
+
+    if      (status == "waiting") { icon = "\033[33m●\033[0m waiting"; rank = 0 }
+    else if (status == "idle")    { icon = "\033[32m●\033[0m idle   "; rank = 1 }
+    else if (status == "shell")   { icon = "\033[36m●\033[0m shell  "; rank = 1 }
+    else if (status == "busy")    { icon = "\033[31m●\033[0m working"; rank = 3 }
+    else                          { icon = "\033[90m●\033[0m   ?    "; rank = 2 }
+
+    age = (upd > 0) ? int((now - upd / 1000) / 60) "m" : "-"
+
+    path = cwd
+    if (index(path, home) == 1) path = "~" substr(path, length(home) + 1)
+
+    printf "%s\t%s\t%s\t%s\t%5s\t%s\n", rank, s, pid, icon, age, path
+  }
+' | sort -t$'\t' -k1,1n -k5,5n

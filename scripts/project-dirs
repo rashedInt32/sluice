@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# project-dirs — the one list of project directories the pickers share.
+# Prints "<label><TAB><path>" per line: every directory directly inside one of
+# ROOTS, plus git worktrees under ~/.worktrees.
+#
+# Edit ROOTS for your own layout. scripts/install.sh copies this file only when
+# ~/.config/sluice/bin/project-dirs does not exist yet, so an edited copy there
+# survives a reinstall.
+ROOTS=(
+  "$HOME/code"
+  "$HOME/projects"
+  "$HOME/src"
+  "$HOME/Documents/codes"
+)
+
+{
+  for root in "${ROOTS[@]}"; do
+    [ -d "$root" ] && find "$root" -mindepth 1 -maxdepth 1 -type d
+  done
+  # git worktrees laid out as ~/.worktrees/<repo>/<branch>; branch names may
+  # contain slashes, so match on the .git marker instead of a fixed depth.
+  find ~/.worktrees -mindepth 2 -maxdepth 5 \
+    -name node_modules -prune -o \
+    -name .git -exec dirname {} \; 2>/dev/null
+} | while IFS= read -r fullpath; do
+  [[ -z "$fullpath" || ! -d "$fullpath" ]] && continue
+  relpath="${fullpath/#$HOME\/Documents\//}"
+  relpath="${relpath/#$HOME\//}"
+  [[ -n "$relpath" ]] && printf "%s\t%s\n" "$relpath" "$fullpath"
+done

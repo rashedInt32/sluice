@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# worktree — git worktrees as sluice sessions (port of tmux-worktree).
+#
+# Run inside a git repo. fzf lists, in one picker:
+#   ● branch   -> an existing worktree      -> switch to its session
+#   + branch   -> a branch with no worktree -> create a worktree for it, then switch
+#   type name  -> no match                  -> new branch + worktree, then switch
+# Prints "<session>\t<path>" for sluice; one worktree = one branch = one session.
+#
+# The repo is taken from $PWD, which for sluice is the directory the picker was
+# started from: set SLUICE_REPO to override.
+
+repo_root=$(git -C "${SLUICE_REPO:-$PWD}" rev-parse --show-toplevel 2>/dev/null)
+if [[ -z "$repo_root" ]]; then
+  echo "worktree: not inside a git repository" >&2; sleep 1.5; exit 1
+fi
+repo_name=$(basename "$repo_root")
+wt_base="$HOME/.worktrees/$repo_name"
+
+wt_porcelain=$(git -C "$repo_root" worktree list --porcelain)
+
+wt_rows=$(printf '%s\n' "$wt_porcelain" | awk '
+  /^worktree /{p=substr($0,10)}
+  /^branch /{b=$2; sub("refs/heads/","",b); print "● "b"\t"b"\t"p}
+  /^detached$/{print "● (detached)\t(detached)\t"p}
+')
+wt_branches=$(printf '%s\n' "$wt_porcelain" | awk '
+  /^branch /{b=$2; sub("refs/heads/","",b); print b}')
+branch_rows=$(git -C "$repo_root" for-each-ref --format='%(refname:short)' refs/heads \
+  | awk -v have="$wt_branches" '
+      BEGIN{ n=split(have, a, "\n"); for (i=1;i<=n;i++) seen[a[i]]=1 }
+      { if (!seen[$0]) print "+ "$0"\t"$0"\t" }')
+
+list=$(printf '%s\n%s\n' "$wt_rows" "$branch_rows" | sed '/^$/d')
+
+sel=$(printf '%s\n' "$list" \
+  | fzf --with-nth=1 --delimiter=$'\t' --print-query \
+        --prompt='worktree > ' \
+        --header='● switch · + create worktree for branch · type a new name = new branch')
+
+query=$(printf '%s\n' "$sel" | sed -n '1p')
+match=$(printf '%s\n' "$sel" | sed -n '2p')
+err=$(mktemp)
+
+if [[ -n "$match" ]]; then
+  branch=$(printf '%s' "$match" | cut -f2)
+  path=$(printf '%s' "$match" | cut -f3)
+  if [[ -z "$path" ]]; then
+    path="$wt_base/$branch"
+    if [[ ! -d "$path" ]]; then
+      git -C "$repo_root" worktree add "$path" "$branch" 2>"$err" \
+        || { echo "failed to create worktree:" >&2; cat "$err" >&2; sleep 2.5; exit 1; }
+    fi
+  fi
+else
+  branch="$query"
+  [[ -z "$branch" ]] && exit 1
+  path="$wt_base/$branch"
+  if ! git -C "$repo_root" worktree add "$path" -b "$branch" 2>"$err"; then
+    git -C "$repo_root" worktree add "$path" "$branch" 2>>"$err" \
+      || { echo "failed to create worktree:" >&2; cat "$err" >&2; sleep 2.5; exit 1; }
+  fi
+fi
+rm -f "$err"
+
+[[ -z "$path" || ! -d "$path" ]] && exit 1
+session=$(printf '%s' "${repo_name}/${branch}" | tr './:, ' '_____')
+printf '%s\t%s\n' "$session" "$path"

@@ -1,0 +1,31 @@
+# ~/.config/sluice/config — defaults shown; delete lines you do not change.
+# Keys: a single character, C-x for ctrl, Esc, Space.
+prefix C-a
+
+# When the session on screen ends (its shell exited, or it was killed from
+# elsewhere): `previous` moves to the previous session, else any live one,
+# else exits; `close` exits at once, which closes the window under the zshrc snippet.
+on-end previous
+
+bind f pick                                   # fzf over live sessions, with screen preview
+bind s run ~/.config/sluice/bin/sessionizer   # project picker -> session (tmux-sessionizer port)
+bind g run ~/.config/sluice/bin/worktree      # git worktree picker (tmux-worktree port)
+bind y run ~/.config/sluice/bin/claude-here   # launch or re-attach Claude for this directory
+bind u run ~/.config/sluice/bin/claude-picker # every running Claude agent, and its session
+bind c new-window                             # new window in this session
+bind n next-window                            # next window, wrapping
+bind p prev-window                            # previous window, wrapping
+bind 0 prev                                   # previous session
+bind 1 jump 1                                 # sessions numbered in creation order
+bind 2 jump 2
+bind 3 jump 3
+bind 4 jump 4
+bind 5 jump 5
+bind 6 jump 6
+bind 7 jump 7
+bind 8 jump 8
+bind 9 jump 9
+bind d detach                                 # leave the session running
+bind x kill                                   # kill this window (asks first)
+bind ? help                                   # list these bindings
+bind C-a literal                              # send a real ctrl+a to the program

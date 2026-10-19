@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# sessionizer — pick a project directory, print "<session>\t<dir>" for sluice.
+# Same list and fzf feel as tmux-sessionizer; only the last lines differ.
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+selected=$("$here/project-dirs" \
+  | fzf --with-nth=1 --delimiter="\t" --ansi --prompt='project > ' \
+  | cut -d$'\t' -f2 | sed 's/[[:space:]]*$//')
+
+[[ -z "$selected" || ! -d "$selected" ]] && exit 1
+
+if [[ "$selected" == "$HOME/.worktrees/"* ]]; then
+  # Same name shape the worktree picker uses, so both land on one session.
+  name=$(printf '%s' "${selected#"$HOME"/.worktrees/}" | tr './:, ' '_____')
+else
+  name=$(basename "$selected" | tr ".,: " "____")
+fi
+printf '%s\t%s\n' "$name" "$selected"

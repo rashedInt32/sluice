@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# claude-here — launch, or go back to, the Claude session for a directory.
+# Bound to prefix+y.
+#
+# Prints `name <TAB> dir <TAB> command` for sluice, which attaches this pane to
+# that session, creating it with the command only if it is not already running.
+# So pressing the key twice does not start a second agent: the first press
+# launches, every later one re-attaches.
+#
+# The directory is the one the picker was started from, which for sluice is the
+# session's own working directory. Set SLUICE_CLAUDE_DIR to override, and
+# SLUICE_CLAUDE_CMD to change what gets launched.
+set -uo pipefail
+
+dir="${SLUICE_CLAUDE_DIR:-$PWD}"
+cmd="${SLUICE_CLAUDE_CMD:-claude}"
+
+[ -d "$dir" ] || {
+  echo "claude-here: $dir does not exist" >&2
+  sleep 1.5
+  exit 1
+}
+
+command -v "${cmd%% *}" >/dev/null 2>&1 || {
+  echo "claude-here: ${cmd%% *} is not on PATH" >&2
+  sleep 1.5
+  exit 1
+}
+
+# One session per directory, named after it. The short hash keeps two projects
+# with the same basename apart; zmx names cannot contain a slash, so the full
+# path cannot simply be used.
+slug="$(basename "$dir" | tr './:, ' '_____')"
+hash="$(printf '%s' "$dir" | cksum | cut -d' ' -f1)"
+printf 'claude_%s_%s\t%s\t%s\n' "$slug" "${hash: -6}" "$dir" "$cmd"
