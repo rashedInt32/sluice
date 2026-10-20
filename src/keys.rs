@@ -80,7 +80,16 @@ impl Scanner {
         }
     }
 
+    #[cfg(test)]
     pub fn feed(&mut self, buf: &[u8]) -> Vec<Event> {
+        self.feed_with(buf, || false)
+    }
+
+    /// As `feed`, but `handed_off` is asked each time the prefix turns up.
+    /// While it says yes the prefix goes through as typed: a program in the
+    /// session has asked for it. Asking only then keeps the check off every
+    /// other keystroke.
+    pub fn feed_with(&mut self, buf: &[u8], mut handed_off: impl FnMut() -> bool) -> Vec<Event> {
         let data: Vec<u8> = if self.pending.is_empty() {
             buf.to_vec()
         } else {
@@ -124,7 +133,7 @@ impl Scanner {
                             out.push(Event::Bytes(std::mem::take(&mut pass)));
                         }
                         out.push(Event::Chord { key, raw_prefix });
-                    } else if exact && key == self.prefix {
+                    } else if exact && key == self.prefix && !handed_off() {
                         if !pass.is_empty() {
                             out.push(Event::Bytes(std::mem::take(&mut pass)));
                         }
@@ -142,6 +151,7 @@ impl Scanner {
         out
     }
 
+    #[cfg(test)]
     pub fn is_waiting(&self) -> bool {
         self.waiting.is_some()
     }
@@ -153,11 +163,6 @@ impl Scanner {
         self.pending.clear();
     }
 
-    /// The held tail of a sequence split across reads, for a caller that is
-    /// about to send input past the scanner.
-    pub fn take_pending(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.pending)
-    }
 }
 
 /// Decode the next item at the head of `buf`.
@@ -373,6 +378,28 @@ mod tests {
     }
 
     #[test]
+    fn a_handed_off_prefix_goes_through_and_only_the_prefix_asks() {
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        let mut asked = 0;
+        let ev = s.feed_with(b"ls\x1b[A\r", || {
+            asked += 1;
+            true
+        });
+        assert_eq!(ev, vec![Event::Bytes(b"ls\x1b[A\r".to_vec())]);
+        assert_eq!(asked, 0, "no prefix, no question");
+        let ev = s.feed_with(b"\x01d\x1b[97;5u", || {
+            asked += 1;
+            true
+        });
+        assert_eq!(ev, vec![Event::Bytes(b"\x01d\x1b[97;5u".to_vec())]);
+        assert_eq!(asked, 2, "once per prefix");
+        assert!(!s.is_waiting());
+        // handed back: the prefix is ours again
+        let ev = s.feed_with(b"\x01d", || false);
+        assert!(matches!(ev[..], [Event::Chord { key: Key::Char('d'), .. }]));
+    }
+
+    #[test]
     fn plain_bytes_pass_through_untouched() {
         let mut s = Scanner::new(Key::Ctrl('a'));
         let input = b"hello \x1b[A world \xe2\x9c\x93";
@@ -554,14 +581,6 @@ mod tests {
 
         s.feed(b"\x1b[9");
         s.reset();
-        assert_eq!(s.feed(b"x"), vec![Event::Bytes(b"x".to_vec())]);
-    }
-
-    #[test]
-    fn take_pending_hands_over_the_held_tail() {
-        let mut s = Scanner::new(Key::Ctrl('a'));
-        s.feed(b"ab\x1b[9");
-        assert_eq!(s.take_pending(), b"\x1b[9");
         assert_eq!(s.feed(b"x"), vec![Event::Bytes(b"x".to_vec())]);
     }
 

@@ -338,19 +338,12 @@ impl Runner {
 
     fn on_input(&mut self, chunk: &[u8]) -> Flow {
         // A program inside the session may have asked for the prefix itself
-        // (loom.nvim). Only a chunk that could hold a prefix pays the stat.
-        let may_prefix = chunk.iter().any(|&b| b == 0x1b || b < 0x20);
-        if may_prefix && !self.scanner.is_waiting() && handoff::active(&self.current) {
-            // A sequence the scanner was holding goes first, or its tail
-            // would be glued onto some later chunk.
-            let mut out = self.scanner.take_pending();
-            out.extend_from_slice(chunk);
-            if let Some(c) = &self.child {
-                let _ = sys::write_all(c.master, &out);
-            }
-            return Flow::Continue;
-        }
-        for ev in self.scanner.feed(chunk) {
+        // (loom.nvim). The marker is read only when the prefix turns up.
+        let current = &self.current;
+        let events = self
+            .scanner
+            .feed_with(chunk, || handoff::active(current));
+        for ev in events {
             match ev {
                 Event::Bytes(b) => {
                     if let Some(c) = &self.child {
