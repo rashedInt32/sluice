@@ -66,6 +66,10 @@ const MAX_PENDING: usize = 512;
 
 pub struct Scanner {
     prefix: Key,
+    /// Bitset over bytes 0-127: those that are a whole key on their own and
+    /// not the prefix. They go through as they are, so runs of them (most of
+    /// a paste) skip the decoder.
+    plain: [u64; 2],
     waiting: Option<Vec<u8>>,
     /// Tail of the last chunk that ended mid-sequence.
     pending: Vec<u8>,
@@ -73,8 +77,19 @@ pub struct Scanner {
 
 impl Scanner {
     pub fn new(prefix: Key) -> Scanner {
+        let mut plain = [0u64; 2];
+        for b in 0..0x80u8 {
+            let alone = match scan_one(&[b]) {
+                Scan::Key { key, exact, len: 1 } => !(exact && key == prefix),
+                _ => false,
+            };
+            if alone && b != 0x1b {
+                plain[b as usize / 64] |= 1 << (b % 64);
+            }
+        }
         Scanner {
             prefix,
+            plain,
             waiting: None,
             pending: Vec::new(),
         }
@@ -90,64 +105,71 @@ impl Scanner {
     /// session has asked for it. Asking only then keeps the check off every
     /// other keystroke.
     pub fn feed_with(&mut self, buf: &[u8], mut handed_off: impl FnMut() -> bool) -> Vec<Event> {
-        let data: Vec<u8> = if self.pending.is_empty() {
-            buf.to_vec()
+        let joined;
+        let data: &[u8] = if self.pending.is_empty() {
+            buf
         } else {
             let mut d = std::mem::take(&mut self.pending);
             d.extend_from_slice(buf);
-            d
+            joined = d;
+            &joined
         };
+        let plain = |b: u8| b < 0x80 && self.plain[b as usize / 64] & (1 << (b % 64)) != 0;
 
+        // Bytes that go through are copied out once per run, not per item:
+        // `run` is where the run waiting to be copied starts.
         let mut out = Vec::new();
-        let mut pass: Vec<u8> = Vec::new();
+        let mut run = 0;
+        let flush = |out: &mut Vec<Event>, from: usize, to: usize| {
+            if from < to {
+                out.push(Event::Bytes(data[from..to].to_vec()));
+            }
+        };
         let mut i = 0;
         while i < data.len() {
-            let scan = scan_one(&data[i..]);
-            match scan {
+            if self.waiting.is_none() && plain(data[i]) {
+                i += 1;
+                while i < data.len() && plain(data[i]) {
+                    i += 1;
+                }
+                continue;
+            }
+            match scan_one(&data[i..]) {
                 Scan::Incomplete => {
                     let rest = &data[i..];
                     if rest.len() <= MAX_PENDING {
+                        flush(&mut out, run, i);
                         self.pending = rest.to_vec();
-                        i = data.len();
-                        continue;
+                        return out;
                     }
                     // Not a sequence after all: let one byte through and resync.
-                    pass.push(data[i]);
                     i += 1;
                 }
                 Scan::Release(len) => {
                     // While the prefix waits, the release of the prefix key
                     // itself would be a stray event for the program.
-                    if self.waiting.is_none() {
-                        pass.extend_from_slice(&data[i..i + len]);
+                    if self.waiting.is_some() {
+                        flush(&mut out, run, i);
+                        run = i + len;
                     }
                     i += len;
                 }
-                Scan::Other(len) => {
-                    pass.extend_from_slice(&data[i..i + len]);
-                    i += len;
-                }
+                Scan::Other(len) => i += len,
                 Scan::Key { key, exact, len } => {
                     if let Some(raw_prefix) = self.waiting.take() {
-                        if !pass.is_empty() {
-                            out.push(Event::Bytes(std::mem::take(&mut pass)));
-                        }
+                        flush(&mut out, run, i);
                         out.push(Event::Chord { key, raw_prefix });
+                        run = i + len;
                     } else if exact && key == self.prefix && !handed_off() {
-                        if !pass.is_empty() {
-                            out.push(Event::Bytes(std::mem::take(&mut pass)));
-                        }
+                        flush(&mut out, run, i);
                         self.waiting = Some(data[i..i + len].to_vec());
-                    } else {
-                        pass.extend_from_slice(&data[i..i + len]);
+                        run = i + len;
                     }
                     i += len;
                 }
             }
         }
-        if !pass.is_empty() {
-            out.push(Event::Bytes(pass));
-        }
+        flush(&mut out, run, data.len());
         out
     }
 
@@ -378,6 +400,43 @@ mod tests {
     }
 
     #[test]
+    fn a_printable_prefix_is_found_inside_a_run() {
+        let mut s = Scanner::new(Key::Char('`'));
+        let ev = s.feed(b"echo hi\n`dls\n");
+        assert_eq!(ev[0], Event::Bytes(b"echo hi\n".to_vec()));
+        assert!(matches!(ev[1], Event::Chord { key: Key::Char('d'), .. }));
+        assert_eq!(ev[2], Event::Bytes(b"ls\n".to_vec()));
+    }
+
+    #[test]
+    fn a_split_read_changes_nothing() {
+        // Forwarded bytes joined, chords in place. A split right after an ESC
+        // is left out: a lone ESC ending a read is the Escape key by design.
+        fn flat(evs: Vec<Event>, into: &mut Vec<Result<u8, Key>>) {
+            for e in evs {
+                match e {
+                    Event::Bytes(b) => into.extend(b.into_iter().map(Ok)),
+                    Event::Chord { key, .. } => into.push(Err(key)),
+                }
+            }
+        }
+        let input: &[u8] =
+            b"ab\tc\x01d\x1b[97;5u\x1b[97;5:3uq\x1b[Ax\xc3\xa9\x01\x1b[O\x1b[<0;9;3Mf\r\x7f";
+        let mut whole = Vec::new();
+        flat(Scanner::new(Key::Ctrl('a')).feed(input), &mut whole);
+        for k in 1..input.len() {
+            if input[k - 1] == 0x1b {
+                continue;
+            }
+            let mut s = Scanner::new(Key::Ctrl('a'));
+            let mut split = Vec::new();
+            flat(s.feed(&input[..k]), &mut split);
+            flat(s.feed(&input[k..]), &mut split);
+            assert_eq!(whole, split, "split at {k}");
+        }
+    }
+
+    #[test]
     fn a_handed_off_prefix_goes_through_and_only_the_prefix_asks() {
         let mut s = Scanner::new(Key::Ctrl('a'));
         let mut asked = 0;
@@ -599,3 +658,4 @@ mod tests {
         assert_eq!(parse_key_name("ab"), None);
     }
 }
+
