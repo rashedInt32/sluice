@@ -76,7 +76,9 @@ pub fn parse_choice(line: &str) -> Option<Choice> {
 
 /// One display line per session: `<n>  name  windows  clients  cwd<TAB>name`.
 /// Windows are not listed one by one -- a session is one row, with a count
-/// when it has more than one. The hidden trailing field is what we read back.
+/// when it has more than one. `current` is the window this pane shows ("" for
+/// none): its session gets the dot, and `2/3w` when it is on window 2 of 3.
+/// The hidden trailing field is what we read back.
 pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
     let w = groups
         .iter()
@@ -84,11 +86,24 @@ pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
         .max()
         .unwrap_or(4)
         .max(4);
+    let windows: Vec<String> = groups
+        .iter()
+        .map(|g| match (g.windows.len(), is_current(g, current)) {
+            (0 | 1, _) => String::new(),
+            (k, true) => match g.windows.iter().position(|x| x == current) {
+                Some(at) => format!("{}/{k}w", at + 1),
+                None => format!("{k}w"),
+            },
+            (k, false) => format!("{k}w"),
+        })
+        .collect();
+    let ww = windows.iter().map(String::len).max().unwrap_or(0).max(2);
     groups
         .iter()
+        .zip(&windows)
         .enumerate()
-        .map(|(i, s)| {
-            let mark = match s.name == current {
+        .map(|(i, (s, windows))| {
+            let mark = match is_current(s, current) {
                 true => paint(GREEN, false, "●"),
                 false => " ".into(),
             };
@@ -96,10 +111,6 @@ pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
                 (i + 1).to_string()
             } else {
                 " ".into()
-            };
-            let windows = match s.windows.len() {
-                0 | 1 => "   ".to_string(),
-                k => format!("{k}w "),
             };
             let clients = match s.clients {
                 0 => "   ".to_string(),
@@ -111,12 +122,17 @@ pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
                 "{} {mark} {}  {}{}\t{}",
                 paint(NUM, false, &n),
                 paint(TEXT, false, &format!("{:<w$}", s.name)),
-                paint(META, false, &format!("{windows}{clients} ")),
+                paint(META, false, &format!("{windows:<ww$} {clients} ")),
                 paint(META, false, &s.cwd),
                 s.name
             )
         })
         .collect()
+}
+
+/// `current` names a window of `g` (or `g` itself).
+fn is_current(g: &Group, current: &str) -> bool {
+    !current.is_empty() && crate::zmx::window_of(current).0 == g.name
 }
 
 /// Open the picker with the cursor on row `index` (1-based), the session you
@@ -185,11 +201,11 @@ pub fn fzf(lines: &[String], label: &str, hints: &str, preview: Option<&str>) ->
 }
 
 /// The session picker: one row per session, the screen of the one under the
-/// cursor below, kill and detach keys. `current` is the session this pane
-/// shows, "" for none; the cursor starts on it.
+/// cursor below, kill and detach keys. `current` is the window this pane
+/// shows, "" for none; the cursor starts on its session.
 pub fn pick_session(groups: &[Group], current: &str, hints: &str) -> Option<String> {
     let lines = session_lines(groups, current);
-    let here = groups.iter().position(|g| g.name == current).map(|i| i + 1);
+    let here = groups.iter().position(|g| is_current(g, current)).map(|i| i + 1);
     let mut extra = session_binds(current);
     extra.extend(focus_binds(here));
     fzf_with(
@@ -473,8 +489,8 @@ mod tests {
             lines[0]
         );
         assert!(
-            lines[1].contains("3w"),
-            "several windows: a count: {}",
+            lines[1].contains("1/3w"),
+            "the session you are in: which window of how many: {}",
             lines[1]
         );
         assert!(lines[0].starts_with("1   main"), "{}", lines[0]);
@@ -483,6 +499,16 @@ mod tests {
         // padding happens before painting, so columns still line up
         let col = |l: &str| l.split("~/x").next().unwrap().chars().count();
         assert_eq!(col(&lines[0]), col(&lines[1]));
+
+        // on window 3, elsewhere: just the count
+        let lines: Vec<String> =
+            session_lines(&[s("main", 1, 2), s("glass", 0, 3)], "glass+3")
+                .iter()
+                .map(|l| strip_ansi(l))
+                .collect();
+        assert!(lines[1].contains("3/3w") && lines[1].contains('●'), "{}", lines[1]);
+        assert!(lines[0].contains("  2w ") && !lines[0].contains("/2w"), "{}", lines[0]);
+        assert_eq!(col(&lines[0]), col(&lines[1]), "2w pads to 3/3w");
     }
 
     fn strip_ansi(s: &str) -> String {

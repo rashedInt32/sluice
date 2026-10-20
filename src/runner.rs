@@ -461,7 +461,7 @@ impl Runner {
                 }
             }
             Action::Pick => {
-                let current = self.group();
+                let current = self.current.clone();
                 let choice = self.with_tty(|| {
                     let groups = zmx::list_groups();
                     if groups.is_empty() {
