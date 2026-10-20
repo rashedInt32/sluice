@@ -161,10 +161,13 @@ fn self_exe() -> String {
     format!("'{}'", exe.replace('\'', r"'\''"))
 }
 
+/// The current session reaches the reload through `$SLUICE_CURRENT`, never
+/// spelled into the bind: a name can come from a git branch, and a `)` or `;`
+/// in it would be read by fzf's action parser or by sh.
 fn session_binds_with(exe: &str, current: &str) -> Vec<String> {
     let reload = match current.is_empty() {
         true => format!("{exe} list --rows"),
-        false => format!("{exe} list --rows --current {current}"),
+        false => format!("{exe} list --rows --current \"$SLUICE_CURRENT\""),
     };
     vec![
         format!("--bind=ctrl-x:execute-silent({exe} kill {{2}})+reload(sleep 0.2; {reload})"),
@@ -176,18 +179,38 @@ fn session_binds_with(exe: &str, current: &str) -> Vec<String> {
 /// Run fzf over `lines`; returns the hidden field (after the last TAB) of the pick.
 /// `label` titles the list box; `hints` is `key word · key word`, shown under it.
 pub fn fzf(lines: &[String], label: &str, hints: &str, preview: Option<&str>) -> Option<String> {
-    fzf_with(lines, label, hints, preview, &[])
+    fzf_with(lines, label, hints, preview, &[], &[])
 }
 
-/// As `fzf`, plus extra `--bind` arguments.
-pub fn fzf_with(
+/// The session picker: one row per session, the screen of the one under the
+/// cursor below, kill and detach keys. `current` is the session this pane
+/// shows, "" for none; the cursor starts on it.
+pub fn pick_session(groups: &[Group], current: &str, hints: &str) -> Option<String> {
+    let lines = session_lines(groups, current);
+    let here = groups.iter().position(|g| g.name == current).map(|i| i + 1);
+    let mut extra = session_binds(current);
+    extra.extend(focus_binds(here));
+    fzf_with(
+        &lines,
+        "sessions",
+        hints,
+        Some("zmx history {2} --vt --screen"),
+        &extra,
+        &[("SLUICE_CURRENT", current)],
+    )
+}
+
+/// As `fzf`, plus extra arguments, and variables for fzf and its binds.
+fn fzf_with(
     lines: &[String],
     label: &str,
     hints: &str,
     preview: Option<&str>,
     extra: &[String],
+    vars: &[(&str, &str)],
 ) -> Option<String> {
     let mut cmd = Command::new("fzf");
+    cmd.envs(vars.iter().copied());
     cmd.args([
         "--delimiter=\t",
         "--with-nth=1",
@@ -383,13 +406,28 @@ mod tests {
             "{b}"
         );
         assert!(
-            b.contains("reload(sleep 0.2; S list --rows --current main)"),
+            b.contains("reload(sleep 0.2; S list --rows --current \"$SLUICE_CURRENT\")"),
             "{b}"
         );
         // with no current session the marker argument is left off entirely
         let b = session_binds_with("S", "").join("\n");
         assert!(b.contains("reload(sleep 0.2; S list --rows)"), "{b}");
         assert!(!b.contains("--current"), "{b}");
+    }
+
+    #[test]
+    fn a_hostile_session_name_never_reaches_the_binds() {
+        let name = "x)+execute(touch${IFS}pwned);$(id)'q";
+        let b = session_binds_with("S", name).join("\n");
+        assert!(!b.contains("pwned"), "{b}");
+        // what the reload runs gets the whole name back as one argument
+        let out = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("printf %s \"$SLUICE_CURRENT\"")
+            .envs([("SLUICE_CURRENT", name)])
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), name);
     }
 
     #[test]

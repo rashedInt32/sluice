@@ -440,15 +440,8 @@ fn parse_attach_args(args: &[String]) -> Result<Option<(String, Option<String>)>
 fn pick_or_sessionize(cfg: &Config) -> Option<picker::Choice> {
     let sessions = zmx::list_groups();
     if !sessions.is_empty() {
-        let lines = picker::session_lines(&sessions, "");
         let header = "j/k move · 1-9 jump · enter attach · ctrl-x kill · ctrl-d detach · i search · q new project";
-        if let Some(name) = picker::fzf_with(
-            &lines,
-            "sessions",
-            header,
-            Some("zmx history {2} --vt --screen"),
-            &picker::session_binds(""),
-        ) {
+        if let Some(name) = picker::pick_session(&sessions, "", header) {
             return Some(picker::Choice::named(name));
         }
     }
