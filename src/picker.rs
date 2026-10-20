@@ -82,7 +82,7 @@ pub fn parse_choice(line: &str) -> Option<Choice> {
 pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
     let w = groups
         .iter()
-        .map(|s| s.name.chars().count())
+        .map(|s| printable(&s.name).chars().count())
         .max()
         .unwrap_or(4)
         .max(4);
@@ -121,9 +121,9 @@ pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
             format!(
                 "{} {mark} {}  {}{}\t{}",
                 paint(NUM, false, &n),
-                paint(TEXT, false, &format!("{:<w$}", s.name)),
+                paint(TEXT, false, &format!("{:<w$}", printable(&s.name))),
                 paint(META, false, &format!("{windows:<ww$} {clients} ")),
-                paint(META, false, &s.cwd),
+                paint(META, false, &printable(&s.cwd)),
                 s.name
             )
         })
@@ -131,6 +131,15 @@ pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
 }
 
 /// `current` names a window of `g` (or `g` itself).
+/// A name or path from `zmx list` as drawn: zmx takes any name, and fzf
+/// would read an escape in it as colour and count it toward the width.
+fn printable(s: &str) -> std::borrow::Cow<'_, str> {
+    match s.chars().any(char::is_control) {
+        true => s.chars().map(|c| if c.is_control() { '_' } else { c }).collect(),
+        false => s.into(),
+    }
+}
+
 fn is_current(g: &Group, current: &str) -> bool {
     !current.is_empty() && crate::zmx::window_of(current).0 == g.name
 }
@@ -533,6 +542,24 @@ mod tests {
         assert!(lines[1].contains("3/3w") && lines[1].contains('●'), "{}", lines[1]);
         assert!(lines[0].contains("  2w ") && !lines[0].contains("/2w"), "{}", lines[0]);
         assert_eq!(col(&lines[0]), col(&lines[1]), "2w pads to 3/3w");
+    }
+
+    #[test]
+    fn session_lines_draw_control_characters_as_underscores() {
+        let g = Group {
+            name: "a\x1b[31mb".into(),
+            created: 0,
+            pid: 0,
+            clients: 0,
+            cwd: "~/\x07x".into(),
+            dir: "/x".into(),
+            windows: vec!["a\x1b[31mb".into()],
+        };
+        let line = &session_lines(&[g], "")[0];
+        let shown = line.split('\t').next().unwrap();
+        assert!(strip_ansi(shown).contains("a_[31mb"), "{line:?}");
+        assert!(strip_ansi(shown).contains("~/_x"), "{line:?}");
+        assert!(line.ends_with("\ta\x1b[31mb"), "the key stays the real name");
     }
 
     fn strip_ansi(s: &str) -> String {

@@ -227,8 +227,9 @@ pub fn kill_target(name: &str, live: &[Session]) -> usize {
 
 /// Session names share zmx's socket directory, so `/` is out; tmux also forbade
 /// `.` `:` and spaces and the user's scripts already map those to `_`.
-/// Control characters go too: a name is drawn in the picker, and an ESC in it
-/// would be a terminal escape.
+/// Control characters go too, so names sluice makes draw cleanly. Names
+/// read back from `zmx list` may still hold them: the picker cleans those
+/// where it draws them.
 pub fn sanitize_name(raw: &str) -> String {
     raw.chars()
         .map(|c| {
