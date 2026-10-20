@@ -726,6 +726,50 @@ fn switch_command_moves_the_pane_from_outside() {
 }
 
 #[test]
+fn back_to_back_switches_are_not_lost() {
+    if !zmx_present() {
+        return;
+    }
+    let a = uniq("bb1");
+    let b = uniq("bb2");
+    let c = uniq("bb3");
+    let state = std::env::temp_dir().join(format!("sluice-state-bb-{}", std::process::id()));
+    let xdg = state.to_str().unwrap().to_string();
+    for s in [&b, &c] {
+        let p = spawn(&[s], &[("XDG_STATE_HOME", &xdg)]);
+        p.expect("$", Duration::from_secs(5));
+        p.send(b"\x01d");
+        assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    }
+    let p = spawn(&[&a], &[("XDG_STATE_HOME", &xdg)]);
+    p.expect("$", Duration::from_secs(5));
+    p.wait_clients(&a, Some(1), Duration::from_secs(3));
+
+    // Hold the client still so both requests are waiting when it wakes: a
+    // single command slot keeps only the second, a queue runs both in order.
+    unsafe { libc::kill(p.pid, libc::SIGSTOP) };
+    let first = sluice_cmd(&["switch", &b, "--session", &a], &xdg);
+    let second = sluice_cmd(&["switch", &c, "--session", &a], &xdg);
+    unsafe { libc::kill(p.pid, libc::SIGCONT) };
+    assert!(first.status.success() && second.status.success());
+    p.wait_clients(&c, Some(1), Duration::from_secs(5));
+    // prefix+0 returns to the session before the last switch: b, which only
+    // holds if the first request ran too.
+    p.send(b"\x010");
+    p.wait_clients(&b, Some(1), Duration::from_secs(5));
+    p.drain(Duration::from_millis(300));
+    p.send(b"echo on-$ZMX_SESSION\r");
+    p.expect(&format!("on-{b}"), Duration::from_secs(5));
+
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    for s in [&a, &b, &c] {
+        kill_session(s);
+    }
+    let _ = std::fs::remove_dir_all(&state);
+}
+
+#[test]
 fn a_run_script_can_name_the_command_a_new_session_starts() {
     if !zmx_present() {
         return;
@@ -1106,13 +1150,21 @@ fn an_armed_prefix_does_not_survive_a_switch() {
     p.send(b"\x01");
     std::thread::sleep(Duration::from_millis(200));
     let out = sluice_cmd(&["switch", &a, "--session", &b], &xdg);
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     p.wait_clients(&a, Some(1), Duration::from_secs(5));
     p.drain(Duration::from_millis(300));
 
     // `d` is typed into the shell, not taken as prefix+d (which would detach)
     p.send(b"d");
-    assert_eq!(p.wait_exit(Duration::from_millis(800)), None, "sluice detached");
+    assert_eq!(
+        p.wait_exit(Duration::from_millis(800)),
+        None,
+        "sluice detached"
+    );
     p.send(b"\x15echo still-$ZMX_SESSION\r");
     p.expect(&format!("still-{a}"), Duration::from_secs(5));
 
@@ -1136,14 +1188,23 @@ fn title_on_shows_the_session_and_keeps_programs_from_changing_it() {
 
     let p = spawn(&[&s], &[("XDG_CONFIG_HOME", &xdg)]);
     let seen = p.expect("$", Duration::from_secs(5));
-    assert!(seen.contains(&format!("\x1b]2;{s}\x07")), "no title set: {seen:?}");
+    assert!(
+        seen.contains(&format!("\x1b]2;{s}\x07")),
+        "no title set: {seen:?}"
+    );
 
     // the shell sets a title of its own, then a directory report: only the
     // directory gets through, since it draws the folder icon
     p.send(b"printf '\\033]2;from-shell\\007\\033]7;file://h/tmp\\007'; echo done-$((1+1))\r");
     let seen = p.expect("done-2", Duration::from_secs(5));
-    assert!(!seen.contains("\x1b]2;from-shell"), "a program's title leaked: {seen:?}");
-    assert!(seen.contains("\x1b]7;file://h/tmp\x07"), "OSC 7 was dropped: {seen:?}");
+    assert!(
+        !seen.contains("\x1b]2;from-shell"),
+        "a program's title leaked: {seen:?}"
+    );
+    assert!(
+        seen.contains("\x1b]7;file://h/tmp\x07"),
+        "OSC 7 was dropped: {seen:?}"
+    );
 
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));

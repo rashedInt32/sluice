@@ -40,6 +40,12 @@ pub struct Runner {
     titles: title::Filter,
 }
 
+impl Drop for Runner {
+    fn drop(&mut self) {
+        clients::close_inbox(std::process::id() as i32);
+    }
+}
+
 enum Flow {
     Continue,
     Exit(i32),
@@ -122,9 +128,9 @@ impl Runner {
             sys::close(c.master);
         }
         let _ = sys::write_all(STDOUT, NEUTRAL);
-        let me = std::process::id() as i32;
-        clients::clear_request(&self.current, me);
-        clients::unregister(&self.current, me);
+        // Requests still queued stay: a switch detaches too, and a second
+        // `sluice switch` sent while the first runs must not be lost.
+        clients::unregister(&self.current, std::process::id() as i32);
         let state = std::mem::take(&mut self.kbd);
         self.kbd_saved.insert(self.current.clone(), state);
     }
@@ -405,15 +411,22 @@ impl Runner {
         Flow::Continue
     }
 
-    /// A command left by `sluice switch` / `sluice detach` in another process.
+    /// Commands left by `sluice switch` / `sluice detach` in other processes,
+    /// run in the order they were sent. Signals coalesce, so one SIGUSR1 may
+    /// stand for several.
     fn on_request(&mut self) -> Flow {
-        let me = std::process::id() as i32;
-        let Some(cmd) = clients::take_request(&self.current, me) else {
-            return Flow::Continue;
-        };
+        for cmd in clients::take_requests(std::process::id() as i32) {
+            if let Flow::Exit(code) = self.run_request(&cmd) {
+                return Flow::Exit(code);
+            }
+        }
+        Flow::Continue
+    }
+
+    fn run_request(&mut self, cmd: &str) -> Flow {
         let (verb, arg) = match cmd.split_once(char::is_whitespace) {
             Some((v, a)) => (v, a.trim()),
-            None => (cmd.as_str(), ""),
+            None => (cmd, ""),
         };
         match verb {
             "switch" if !arg.is_empty() => self.switch_to(Choice::named(arg)),
