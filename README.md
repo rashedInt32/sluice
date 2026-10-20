@@ -94,6 +94,7 @@ bind f pick
 bind s run ~/.config/sluice/bin/sessionizer
 bind j run printf 'main\n'       # any command printing "name" or "name<TAB>dir"
 unbind x
+sessionizer ~/bin/my-projects    # what bare `sluice` runs with no sessions; defaults to the `s` command
 ```
 
 `run` commands get the tty, so they can use fzf themselves. They print the session to attach, and optionally the directory to create it in.

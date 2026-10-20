@@ -436,7 +436,7 @@ fn parse_attach_args(args: &[String]) -> Result<Option<(String, Option<String>)>
 }
 
 /// No name given: fzf over live sessions; with none (or on cancel) fall through
-/// to the `s` binding's script so a fresh terminal can start a project directly.
+/// to the sessionizer so a fresh terminal can start a project directly.
 fn pick_or_sessionize(cfg: &Config) -> Option<picker::Choice> {
     let sessions = zmx::list_groups();
     if !sessions.is_empty() {
@@ -452,11 +452,7 @@ fn pick_or_sessionize(cfg: &Config) -> Option<picker::Choice> {
             return Some(picker::Choice::named(name));
         }
     }
-    let script = cfg.binds.values().find_map(|a| match a {
-        config::Action::Run(cmd) => Some(cmd.clone()),
-        _ => None,
-    })?;
-    picker::run_script(&script)
+    picker::run_script(cfg.sessionizer.as_deref()?)
 }
 
 #[cfg(test)]

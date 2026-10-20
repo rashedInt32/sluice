@@ -7,6 +7,10 @@ prefix C-a
 # else exits; `close` exits at once, which closes the window under the zshrc snippet.
 on-end previous
 
+# What a bare `sluice` runs when no session is live, or the picker is
+# cancelled. Without this line it is whatever `s` runs below.
+# sessionizer ~/.config/sluice/bin/sessionizer
+
 bind f pick                                   # fzf over live sessions, with screen preview
 bind s run ~/.config/sluice/bin/sessionizer   # project picker -> session (tmux-sessionizer port)
 bind g run ~/.config/sluice/bin/worktree      # git worktree picker (tmux-worktree port)

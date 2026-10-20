@@ -53,6 +53,9 @@ pub struct Config {
     pub prefix: Key,
     pub binds: HashMap<Key, Action>,
     pub on_end: OnEnd,
+    /// What a bare `sluice` runs when no session is live (or the picker is
+    /// cancelled): the `sessionizer` directive, else whatever `s` runs.
+    pub sessionizer: Option<String>,
 }
 
 pub fn config_dir() -> PathBuf {
@@ -67,12 +70,10 @@ pub fn config_dir() -> PathBuf {
 impl Config {
     pub fn defaults() -> Config {
         let bin = config_dir().join("bin");
+        let sessionizer = bin.join("sessionizer").display().to_string();
         let mut binds = HashMap::new();
         binds.insert(Key::Char('f'), Action::Pick);
-        binds.insert(
-            Key::Char('s'),
-            Action::Run(bin.join("sessionizer").display().to_string()),
-        );
+        binds.insert(Key::Char('s'), Action::Run(sessionizer.clone()));
         binds.insert(
             Key::Char('g'),
             Action::Run(bin.join("worktree").display().to_string()),
@@ -101,6 +102,7 @@ impl Config {
             prefix: Key::Ctrl('a'),
             binds,
             on_end: OnEnd::Previous,
+            sessionizer: Some(sessionizer),
         }
     }
 
@@ -118,6 +120,7 @@ impl Config {
         let mut cfg = Config::defaults();
         let mut warnings = Vec::new();
         let mut had_prefix = false;
+        let mut sessionizer = None;
         for (lineno, raw) in text.lines().enumerate() {
             let line = strip_comment(raw);
             if line.is_empty() {
@@ -168,6 +171,11 @@ impl Config {
                         lineno + 1
                     )),
                 },
+                "sessionizer" if rest.is_empty() => warnings.push(format!(
+                    "line {}: `sessionizer` needs a command",
+                    lineno + 1
+                )),
+                "sessionizer" => sessionizer = Some(rest.to_string()),
                 "unbind" => match parse_key_name(rest) {
                     Some(k) => {
                         cfg.binds.remove(&k);
@@ -180,6 +188,10 @@ impl Config {
                 )),
             }
         }
+        cfg.sessionizer = sessionizer.or_else(|| match cfg.binds.get(&Key::Char('s')) {
+            Some(Action::Run(cmd)) => Some(cmd.clone()),
+            _ => None,
+        });
         (cfg, warnings)
     }
 
@@ -285,6 +297,24 @@ mod tests {
         let (c, w) = Config::parse("on-end sideways\n");
         assert_eq!(c.on_end, OnEnd::Previous);
         assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn the_sessionizer_follows_s_unless_named() {
+        let s = |text: &str| Config::parse(text).0.sessionizer;
+        assert!(Config::defaults()
+            .sessionizer
+            .is_some_and(|c| c.ends_with("/bin/sessionizer")));
+        assert_eq!(s("bind s run ~/x").as_deref(), Some("~/x"), "follows a rebound s");
+        assert_eq!(
+            s("bind s run ~/x\nsessionizer ~/y").as_deref(),
+            Some("~/y"),
+            "the directive wins"
+        );
+        assert_eq!(s("unbind s"), None, "nothing to run: never some other script");
+        assert_eq!(s("bind s pick"), None);
+        let (_, w) = Config::parse("sessionizer");
+        assert_eq!(w.len(), 1, "{w:?}");
     }
 
     #[test]
