@@ -77,7 +77,9 @@ pub fn take_request(session: &str, pid: i32) -> Option<String> {
 }
 
 pub fn clear_request(session: &str, pid: i32) {
-    let _ = std::fs::remove_file(cmd_dir(&base(), session).join(pid.to_string()));
+    let d = cmd_dir(&base(), session);
+    let _ = std::fs::remove_file(d.join(pid.to_string()));
+    let _ = std::fs::remove_dir(&d); // only succeeds when empty
 }
 
 fn request_in(base: &std::path::Path, session: &str, cmd: &str) -> usize {
@@ -101,14 +103,48 @@ fn request_in(base: &std::path::Path, session: &str, cmd: &str) -> usize {
 }
 
 fn take_request_in(base: &std::path::Path, session: &str, pid: i32) -> Option<String> {
-    let path = cmd_dir(base, session).join(pid.to_string());
+    let d = cmd_dir(base, session);
+    let path = d.join(pid.to_string());
     let text = std::fs::read_to_string(&path).ok()?;
     let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_dir(&d); // only succeeds when empty
     let t = text.trim();
     if t.is_empty() {
         None
     } else {
         Some(t.to_string())
+    }
+}
+
+/// Clear what dead clients left behind: a SIGKILLed client never
+/// unregisters, and a session nobody asks about again is never swept by
+/// `pids_in`. Removes only files named after a dead pid, and only empty
+/// directories, under the two trees sluice owns. Run once per start.
+pub fn sweep() {
+    sweep_in(&base())
+}
+
+fn sweep_in(base: &std::path::Path) {
+    for tree in ["sluice/clients", "sluice/cmd"] {
+        let Ok(sessions) = std::fs::read_dir(base.join(tree)) else {
+            continue;
+        };
+        for d in sessions.flatten() {
+            let Ok(files) = std::fs::read_dir(d.path()) else {
+                continue;
+            };
+            for f in files.flatten() {
+                let dead = f
+                    .file_name()
+                    .to_str()
+                    .and_then(|n| n.parse::<i32>().ok())
+                    .is_some_and(|pid| !alive(pid));
+                if dead {
+                    let _ = std::fs::remove_file(f.path());
+                }
+            }
+            let _ = std::fs::remove_dir(d.path()); // only succeeds when empty
+        }
     }
 }
 
@@ -142,6 +178,23 @@ mod tests {
             Some("switch other")
         );
         assert_eq!(take_request_in(&d, "s", me), None, "consumed on read");
+        assert!(!cmd_dir(&d, "s").exists(), "and its directory with it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn sweep_clears_dead_clients_and_keeps_live_ones() {
+        let d = std::env::temp_dir().join(format!("sluice-sweep-{}", std::process::id()));
+        let me = std::process::id() as i32;
+        register_in(&d, "gone", 1_999_999_999);
+        register_in(&d, "here", me);
+        std::fs::create_dir_all(cmd_dir(&d, "gone")).unwrap();
+        std::fs::write(cmd_dir(&d, "gone").join("1999999999"), "detach").unwrap();
+        std::fs::write(dir(&d, "here").join("notes"), "").unwrap();
+        sweep_in(&d);
+        assert!(!dir(&d, "gone").exists(), "dead client dir removed");
+        assert!(!cmd_dir(&d, "gone").exists(), "its stale command too");
+        assert_eq!(pids_in(&d, "here"), vec![me], "a live client stays");
         let _ = std::fs::remove_dir_all(&d);
     }
 

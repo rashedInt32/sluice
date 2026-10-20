@@ -50,6 +50,7 @@ impl Runner {
         cwd: Option<&str>,
         live: &[Session],
     ) -> std::io::Result<Runner> {
+        clients::sweep();
         let sig_fd = sys::signal_pipe()?;
         let raw = RawMode::enter()?;
         let scanner = Scanner::new(cfg.prefix);
