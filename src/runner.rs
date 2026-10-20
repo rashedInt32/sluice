@@ -255,8 +255,8 @@ impl Runner {
     pub fn run(mut self) -> i32 {
         let mut buf = vec![0u8; BUF];
         loop {
-            let master = match &self.child {
-                Some(c) => c.master,
+            let (pid, master) = match &self.child {
+                Some(c) => (c.pid, c.master),
                 None => return 0,
             };
             let ready = match sys::poll_readable(&[STDIN, master, self.sig_fd]) {
@@ -267,6 +267,12 @@ impl Runner {
             if ready & 0b100 != 0 {
                 if let Flow::Exit(code) = self.on_signals() {
                     return code;
+                }
+                // A signal can end the child or switch to another window.
+                // `ready` then describes a closed fd, whose number the new
+                // pty has likely reused: poll again rather than read it.
+                if self.child.as_ref().map(|c| c.pid) != Some(pid) {
+                    continue;
                 }
             }
             if ready & 0b010 != 0 {
