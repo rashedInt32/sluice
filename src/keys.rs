@@ -145,6 +145,19 @@ impl Scanner {
     pub fn is_waiting(&self) -> bool {
         self.waiting.is_some()
     }
+
+    /// Forget an armed prefix and any half-read sequence. Called on every
+    /// detach: neither belongs to the window that comes next.
+    pub fn reset(&mut self) {
+        self.waiting = None;
+        self.pending.clear();
+    }
+
+    /// The held tail of a sequence split across reads, for a caller that is
+    /// about to send input past the scanner.
+    pub fn take_pending(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending)
+    }
 }
 
 /// Decode the next item at the head of `buf`.
@@ -529,6 +542,27 @@ mod tests {
         let ev = s.feed(b"\x1b[97;7u");
         assert_eq!(ev, vec![Event::Bytes(b"\x1b[97;7u".to_vec())]);
         assert!(!s.is_waiting());
+    }
+
+    #[test]
+    fn reset_disarms_the_prefix_and_drops_a_held_tail() {
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"\x01");
+        s.reset();
+        assert!(!s.is_waiting());
+        assert_eq!(s.feed(b"d"), vec![Event::Bytes(b"d".to_vec())], "d is typed");
+
+        s.feed(b"\x1b[9");
+        s.reset();
+        assert_eq!(s.feed(b"x"), vec![Event::Bytes(b"x".to_vec())]);
+    }
+
+    #[test]
+    fn take_pending_hands_over_the_held_tail() {
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"ab\x1b[9");
+        assert_eq!(s.take_pending(), b"\x1b[9");
+        assert_eq!(s.feed(b"x"), vec![Event::Bytes(b"x".to_vec())]);
     }
 
     #[test]

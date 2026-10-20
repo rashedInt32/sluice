@@ -1073,3 +1073,43 @@ fn prefix_x_kills_only_the_window_on_screen() {
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     kill_session(&s);
 }
+
+#[test]
+fn an_armed_prefix_does_not_survive_a_switch() {
+    if !zmx_present() {
+        return;
+    }
+    let a = uniq("arm1");
+    let b = uniq("arm2");
+    let state = std::env::temp_dir().join(format!("sluice-state-arm-{}", std::process::id()));
+    let xdg = state.to_str().unwrap().to_string();
+
+    let p = spawn(&[&a], &[("XDG_STATE_HOME", &xdg)]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+
+    let p = spawn(&[&b], &[("XDG_STATE_HOME", &xdg)]);
+    p.expect("$", Duration::from_secs(5));
+    p.wait_clients(&b, Some(1), Duration::from_secs(3));
+
+    // arm the prefix, then move the pane from outside before the chord key
+    p.send(b"\x01");
+    std::thread::sleep(Duration::from_millis(200));
+    let out = sluice_cmd(&["switch", &a, "--session", &b], &xdg);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    p.wait_clients(&a, Some(1), Duration::from_secs(5));
+    p.drain(Duration::from_millis(300));
+
+    // `d` is typed into the shell, not taken as prefix+d (which would detach)
+    p.send(b"d");
+    assert_eq!(p.wait_exit(Duration::from_millis(800)), None, "sluice detached");
+    p.send(b"\x15echo still-$ZMX_SESSION\r");
+    p.expect(&format!("still-{a}"), Duration::from_secs(5));
+
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    kill_session(&a);
+    kill_session(&b);
+    let _ = std::fs::remove_dir_all(&state);
+}

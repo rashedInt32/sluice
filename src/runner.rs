@@ -101,6 +101,7 @@ impl Runner {
     /// back to neutral: zmx will re-enable the modes the next window uses,
     /// and `attach` re-applies kitty flags, which zmx does not replay.
     fn detach(&mut self) {
+        self.scanner.reset();
         if let Some(c) = self.child.take() {
             sys::hangup_and_wait(c.pid, std::time::Duration::from_millis(500));
             sys::close(c.master);
@@ -119,6 +120,7 @@ impl Runner {
     /// window of the same session first, then another session -- unless the
     /// config says to close.
     fn after_child_exit(&mut self, code: i32) -> Flow {
+        self.scanner.reset();
         let _ = sys::write_all(STDOUT, NEUTRAL);
         clients::unregister(&self.current, std::process::id() as i32);
         let live = zmx::list();
@@ -307,8 +309,12 @@ impl Runner {
         // (loom.nvim). Only a chunk that could hold a prefix pays the stat.
         let may_prefix = chunk.iter().any(|&b| b == 0x1b || b < 0x20);
         if may_prefix && !self.scanner.is_waiting() && handoff::active(&self.current) {
+            // A sequence the scanner was holding goes first, or its tail
+            // would be glued onto some later chunk.
+            let mut out = self.scanner.take_pending();
+            out.extend_from_slice(chunk);
             if let Some(c) = &self.child {
-                let _ = sys::write_all(c.master, chunk);
+                let _ = sys::write_all(c.master, &out);
             }
             return Flow::Continue;
         }
