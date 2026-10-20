@@ -86,13 +86,15 @@ pub struct Child {
 /// Fork a child on a fresh pty running `argv[0]` with `argv`, optionally in `cwd`,
 /// with `ZMX_SESSION` removed so zmx attaches instead of switching.
 pub fn spawn_pty(argv: &[&str], cwd: Option<&str>, ws: &libc::winsize) -> io::Result<Child> {
+    let nul = |_| io::Error::new(io::ErrorKind::InvalidInput, "a NUL byte in a name or path");
     let c_args: Vec<CString> = argv
         .iter()
-        .map(|a| CString::new(*a).expect("argv without NUL"))
-        .collect();
+        .map(|a| CString::new(*a))
+        .collect::<Result<_, _>>()
+        .map_err(nul)?;
     let mut ptrs: Vec<*const libc::c_char> = c_args.iter().map(|c| c.as_ptr()).collect();
     ptrs.push(std::ptr::null());
-    let c_cwd = cwd.map(|d| CString::new(d).expect("cwd without NUL"));
+    let c_cwd = cwd.map(CString::new).transpose().map_err(nul)?;
     let zmx_session = CString::new("ZMX_SESSION").unwrap();
     // zmx's own ctrl+\ detach would end the client, and with it sluice and the
     // window. sluice has prefix+d; programs get ctrl+\ (loom.nvim opens on it).

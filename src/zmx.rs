@@ -216,10 +216,12 @@ pub fn kill_target(name: &str, live: &[Session]) -> usize {
 
 /// Session names share zmx's socket directory, so `/` is out; tmux also forbade
 /// `.` `:` and spaces and the user's scripts already map those to `_`.
+/// Control characters go too: a name is drawn in the picker, and an ESC in it
+/// would be a terminal escape.
 pub fn sanitize_name(raw: &str) -> String {
     raw.chars()
         .map(|c| {
-            if matches!(c, '/' | '.' | ':' | ',' | ' ' | '\t') {
+            if matches!(c, '/' | '.' | ':' | ',' | ' ') || c.is_control() {
                 '_'
             } else {
                 c
@@ -343,5 +345,6 @@ mod tests {
     fn sanitize_matches_tmux_rules() {
         assert_eq!(sanitize_name("glass/feat.x:y z"), "glass_feat_x_y_z");
         assert_eq!(sanitize_name("plain-name"), "plain-name");
+        assert_eq!(sanitize_name("a\tb\x1b[2Jc\0"), "a_b_[2Jc_", "no control bytes");
     }
 }

@@ -49,9 +49,11 @@ impl Choice {
 /// `name`, `name<TAB>dir`, or `name<TAB>dir<TAB>command args` from a line of
 /// script output. The command is split on whitespace: a script that needs
 /// quoting should wrap the program in one of its own.
+///
+/// A line with a NUL is no choice at all: no path or argument can hold one.
 pub fn parse_choice(line: &str) -> Option<Choice> {
     let line = line.trim_end_matches(['\r', '\n']);
-    if line.trim().is_empty() {
+    if line.trim().is_empty() || line.contains('\0') {
         return None;
     }
     let mut fields = line.split('\t');
@@ -335,6 +337,9 @@ mod tests {
             "a row with no name is not a choice"
         );
         assert_eq!(parse_choice("a.b\t").unwrap().name, "a_b");
+        assert!(parse_choice("x\0y\t/tmp").is_none(), "NUL in the name");
+        assert!(parse_choice("x\t/tm\0p").is_none(), "NUL in the directory");
+        assert!(parse_choice("x\t/tmp\tsh -c\0").is_none(), "NUL in the command");
     }
 
     #[test]
