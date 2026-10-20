@@ -93,9 +93,12 @@ impl KittyState {
                 Some(b'>') => {
                     let flags = num(&body[1..]).unwrap_or(0) & FLAG_MASK;
                     let st = self.stack();
-                    if st.len() < MAX_STACK {
-                        st.push(flags);
+                    // A full stack evicts its oldest entry, as the kitty spec
+                    // asks of the terminal. Entry 0 is the base, not a push.
+                    if st.len() >= MAX_STACK {
+                        st.remove(1);
                     }
+                    st.push(flags);
                 }
                 Some(b'<') => {
                     let n = num(&body[1..]).unwrap_or(1).max(1) as usize;
@@ -191,6 +194,21 @@ mod tests {
         assert_eq!(k.flags(), (3, 0));
         k.feed(b"\x1b[<9u"); // over-pop lands at zero, never panics
         assert_eq!(k.flags(), (0, 0));
+    }
+
+    #[test]
+    fn a_full_stack_drops_its_oldest_push_not_the_newest() {
+        let mut k = KittyState::default();
+        for _ in 0..MAX_STACK {
+            k.feed(b"\x1b[>1u");
+        }
+        k.feed(b"\x1b[>3u");
+        assert_eq!(k.flags(), (3, 0), "the newest push is on top");
+        assert_eq!(k.main.len(), MAX_STACK);
+        k.feed(b"\x1b[<u");
+        assert_eq!(k.flags(), (1, 0));
+        k.feed(b"\x1b[<99u");
+        assert_eq!(k.flags(), (0, 0), "still lands on the base");
     }
 
     #[test]
