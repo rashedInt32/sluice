@@ -383,7 +383,7 @@ fn here_name(
         // $HOME is everyone's default landing place; it gets the name the
         // shell snippet has always used rather than the user's login name.
         _ if Some(cwd) == home => "main".to_string(),
-        Some(n) => zmx::sanitize_name(&n.to_string_lossy()),
+        Some(n) => zmx::dir_session_name(&n.to_string_lossy()),
         None => "main".to_string(),
     };
     let base = if base.is_empty() {
@@ -492,6 +492,8 @@ mod tests {
             here_name(Path::new("/tmp/my app.v2"), Some(home), &[]),
             "my_app_v2"
         );
+        // nor one that would read as a window of another session
+        assert_eq!(here_name(Path::new("/tmp/app+2"), Some(home), &[]), "app_2");
     }
 
     #[test]

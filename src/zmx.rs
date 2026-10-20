@@ -108,7 +108,8 @@ pub fn available() -> bool {
 // A sluice session is a group of zmx sessions, one per window. Window 1 keeps
 // the bare session name, so every session that existed before windows did is
 // simply a one-window group. Window k is `<session>+<k>`: zmx accepts `+` in a
-// name, and sluice never produces it from a directory or a typed name.
+// name. A name made from a directory never ends that way (see
+// `dir_session_name`); a typed `glass+2` means window 2 on purpose.
 //
 // Only one window is on screen at a time, so switching window is the same
 // operation as switching session -- detach one zmx client, attach another --
@@ -227,6 +228,20 @@ pub fn sanitize_name(raw: &str) -> String {
         .collect()
 }
 
+/// A session name made from a directory name. Sanitized like any name, and
+/// a trailing `+<digits>` becomes `_<digits>`: `c++17` would otherwise be
+/// window 17 of a session called `c+`. The bundled scripts apply the same
+/// rule, so `sluice here` and the sessionizer agree on a directory's name.
+pub fn dir_session_name(raw: &str) -> String {
+    let mut name = sanitize_name(raw);
+    if let Some((g, k)) = name.rsplit_once('+') {
+        if !g.is_empty() && !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()) {
+            name = format!("{g}_{k}");
+        }
+    }
+    name
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,6 +326,17 @@ mod tests {
         let after = groups(&[s("a", 10, 0), s("b", 20, 0), s("a+2", 99, 0)]);
         let n = |g: &[Group]| g.iter().map(|x| x.name.clone()).collect::<Vec<_>>();
         assert_eq!(n(&before), n(&after));
+    }
+
+    #[test]
+    fn a_directory_never_names_a_window() {
+        assert_eq!(dir_session_name("c++17"), "c+_17");
+        assert_eq!(dir_session_name("app+2"), "app_2");
+        assert_eq!(dir_session_name("app+0"), "app_0", "same rule as the scripts");
+        assert_eq!(dir_session_name("c++"), "c++");
+        assert_eq!(dir_session_name("+2"), "+2", "not a window ref either");
+        assert_eq!(dir_session_name("my app.v2"), "my_app_v2");
+        assert!(!is_window_ref(&dir_session_name("lib+3")));
     }
 
     #[test]
