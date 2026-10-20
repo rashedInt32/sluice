@@ -161,13 +161,52 @@ fn csi_len(buf: &[u8]) -> Option<usize> {
     None
 }
 
+/// First `needle` in `hay`. Runs over all output, so it tests eight bytes at
+/// a time: a byte of `x` is zero where `hay` matched, and `x - LO & !x & HI`
+/// sets the top bit of the lowest zero byte. Higher bits can be false hits
+/// from the borrow, so only the lowest one is used.
 fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
-    hay.iter().position(|&b| b == needle)
+    const LO: u64 = 0x0101_0101_0101_0101;
+    const HI: u64 = 0x8080_8080_8080_8080;
+    let rep = LO * needle as u64;
+    let mut words = hay.chunks_exact(8);
+    let mut base = 0;
+    for w in &mut words {
+        let x = u64::from_le_bytes(w.try_into().expect("8 bytes")) ^ rep;
+        let hit = x.wrapping_sub(LO) & !x & HI;
+        if hit != 0 {
+            return Some(base + (hit.trailing_zeros() / 8) as usize);
+        }
+        base += 8;
+    }
+    words
+        .remainder()
+        .iter()
+        .position(|&b| b == needle)
+        .map(|p| base + p)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memchr_finds_the_first_match_at_any_offset() {
+        let mut hay = vec![b'x'; 40];
+        assert_eq!(memchr(0x1b, &hay), None);
+        for at in 0..hay.len() {
+            hay[at] = 0x1b;
+            // a later match must not win, nor a byte the borrow touched
+            hay[(at + 1) % 40] = 0x1a;
+            for start in 0..=at {
+                assert_eq!(memchr(0x1b, &hay[start..]), Some(at - start), "at {at} from {start}");
+            }
+            hay[at] = b'x';
+            hay[(at + 1) % 40] = b'x';
+        }
+        assert_eq!(memchr(0x1b, b"\x1b\x1b"), Some(0));
+        assert_eq!(memchr(0x1b, b""), None);
+    }
 
     #[test]
     fn plain_output_changes_nothing() {
@@ -259,3 +298,4 @@ mod tests {
         assert_eq!(k.flags(), (0, 0));
     }
 }
+
