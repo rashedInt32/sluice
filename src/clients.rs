@@ -69,8 +69,8 @@ fn pids_in(base: &std::path::Path, session: &str) -> Vec<i32> {
 }
 
 /// Leave `cmd` for every sluice client showing `session`, then nudge them.
-/// Returns how many clients were reached.
-pub fn request(session: &str, cmd: &str) -> usize {
+/// Returns the pids of the clients reached.
+pub fn request(session: &str, cmd: &str) -> Vec<i32> {
     request_in(&base(), session, cmd)
 }
 
@@ -84,21 +84,27 @@ pub fn close_inbox(pid: i32) {
     let _ = std::fs::remove_dir_all(inbox(&base(), pid));
 }
 
-fn request_in(base: &std::path::Path, session: &str, cmd: &str) -> usize {
+/// Whether client `pid` is still registered on `session`. A stat, so cheap
+/// enough to poll.
+pub fn showing(session: &str, pid: i32) -> bool {
+    dir(&base(), session).join(pid.to_string()).exists() && alive(pid)
+}
+
+fn request_in(base: &std::path::Path, session: &str, cmd: &str) -> Vec<i32> {
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     // Sender pid breaks a tie between two senders in the same nanosecond.
     let name = format!("{stamp:024}-{}", std::process::id());
-    let mut sent = 0;
+    let mut sent = Vec::new();
     for pid in pids_in(base, session) {
         if post(&inbox(base, pid), &name, cmd).is_ok() {
             // SIGUSR1 rather than a socket: the client already has a signal
             // self-pipe, and a signal cannot be missed the way a connect to a
             // busy listener can.
             if unsafe { libc::kill(pid, libc::SIGUSR1) } == 0 {
-                sent += 1;
+                sent.push(pid);
             }
         }
     }
@@ -198,12 +204,12 @@ mod tests {
         unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
         let d = std::env::temp_dir().join(format!("sluice-req-{}", std::process::id()));
         let me = std::process::id() as i32;
-        assert_eq!(request_in(&d, "s", "switch other"), 0, "nobody attached");
+        assert!(request_in(&d, "s", "switch other").is_empty(), "nobody attached");
         register_in(&d, "s", me);
         register_in(&d, "s", 1_999_999_999);
         assert_eq!(
             request_in(&d, "s", "switch other"),
-            1,
+            vec![me],
             "only the live client"
         );
         assert_eq!(take_requests_in(&d, me), vec!["switch other"]);

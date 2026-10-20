@@ -332,13 +332,16 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
             }
         }
     }
-    let reached: usize = targets.iter().map(|t| clients::request(t, &cmd)).sum();
-    if reached == 0 {
+    let reached: Vec<(&String, i32)> = targets
+        .iter()
+        .flat_map(|t| clients::request(t, &cmd).into_iter().map(move |p| (t, p)))
+        .collect();
+    if reached.is_empty() {
         eprintln!("sluice: no sluice client is showing `{session}`");
         return 1;
     }
     if cmd == "detach" {
-        wait_detached(&targets, clients_on(&live, &targets), reached);
+        wait_detached(&targets, clients_on(&live, &targets), &reached);
     }
     0
 }
@@ -351,14 +354,26 @@ fn clients_on(live: &[zmx::Session], targets: &[String]) -> usize {
 }
 
 /// A detach lands asynchronously, in the client. Return once zmx counts
-/// `reached` fewer clients on `targets`, so whoever runs next (the picker's
-/// reload) sees the result. Bounded: a slow client only costs a second.
-fn wait_detached(targets: &[String], before: usize, reached: usize) {
-    for _ in 0..100 {
-        if clients_on(&zmx::list(), targets) + reached <= before {
+/// the reached clients gone from `targets`, so whoever runs next (the
+/// picker's reload) sees the result.
+///
+/// First watch each client's registration file, which it removes once its
+/// attach child is reaped: a stat per poll, no subprocess. Then confirm with
+/// `zmx list`, which can trail the reap by a moment, backing off so a client
+/// that never lets go costs a handful of spawns rather than a hundred.
+fn wait_detached(targets: &[String], before: usize, reached: &[(&String, i32)]) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    while reached.iter().any(|(t, p)| clients::showing(t, *p)) {
+        if std::time::Instant::now() >= end {
             return;
         }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    for ms in [0, 5, 10, 20, 40, 80] {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        if clients_on(&zmx::list(), targets) + reached.len() <= before {
+            return;
+        }
     }
 }
 
