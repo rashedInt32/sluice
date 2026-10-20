@@ -56,6 +56,9 @@ pub struct Config {
     /// What a bare `sluice` runs when no session is live (or the picker is
     /// cancelled): the `sessionizer` directive, else whatever `s` runs.
     pub sessionizer: Option<String>,
+    /// `title on`: the window title is the session name, and programs inside
+    /// cannot change it.
+    pub title: bool,
 }
 
 pub fn config_dir() -> PathBuf {
@@ -103,6 +106,7 @@ impl Config {
             binds,
             on_end: OnEnd::Previous,
             sessionizer: Some(sessionizer),
+            title: false,
         }
     }
 
@@ -170,6 +174,11 @@ impl Config {
                         "line {}: on-end wants `previous` or `close`",
                         lineno + 1
                     )),
+                },
+                "title" => match rest {
+                    "on" => cfg.title = true,
+                    "off" => cfg.title = false,
+                    _ => warnings.push(format!("line {}: title wants `on` or `off`", lineno + 1)),
                 },
                 "sessionizer" if rest.is_empty() => warnings.push(format!(
                     "line {}: `sessionizer` needs a command",
@@ -309,6 +318,14 @@ mod tests {
         let (c, w) = Config::parse("on-end sideways\n");
         assert_eq!(c.on_end, OnEnd::Previous);
         assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn title_is_off_unless_asked_for() {
+        assert!(!Config::defaults().title);
+        assert!(Config::parse("title on").0.title);
+        let (c, w) = Config::parse("title maybe");
+        assert!(!c.title && w.len() == 1, "{w:?}");
     }
 
     #[test]

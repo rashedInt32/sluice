@@ -14,6 +14,7 @@ use crate::kbd::{KittyState, NEUTRAL};
 use crate::keys::{Event, Key, Scanner};
 use crate::picker::{self, Choice};
 use crate::sys::{self, Child, RawMode, STDIN, STDOUT};
+use crate::title;
 use crate::zmx::{self, Session};
 use std::collections::HashMap;
 
@@ -35,6 +36,8 @@ pub struct Runner {
     kbd: KittyState,
     /// the same for windows we have shown before and may come back to
     kbd_saved: HashMap<String, KittyState>,
+    /// drops the programs' own window titles, with `title on`
+    titles: title::Filter,
 }
 
 enum Flow {
@@ -66,6 +69,7 @@ impl Runner {
             child: None,
             kbd: KittyState::default(),
             kbd_saved: HashMap::new(),
+            titles: title::Filter::default(),
         };
         r.attach(&target, cwd, None)?;
         Ok(r)
@@ -97,6 +101,9 @@ impl Runner {
         }
         let child = sys::spawn_pty(&argv, cwd, &ws)?;
         self.child = Some(child);
+        if self.cfg.title {
+            let _ = sys::write_all(STDOUT, &title::set(zmx::window_of(name).0));
+        }
         clients::register(name, std::process::id() as i32);
         self.last_window
             .insert(zmx::window_of(name).0.to_string(), name.to_string());
@@ -109,6 +116,7 @@ impl Runner {
     /// and `attach` re-applies kitty flags, which zmx does not replay.
     fn detach(&mut self) {
         self.scanner.reset();
+        self.titles.reset();
         if let Some(c) = self.child.take() {
             sys::hangup_and_wait(c.pid, std::time::Duration::from_millis(500));
             sys::close(c.master);
@@ -128,6 +136,7 @@ impl Runner {
     /// config says to close.
     fn after_child_exit(&mut self, code: i32) -> Flow {
         self.scanner.reset();
+        self.titles.reset();
         let _ = sys::write_all(STDOUT, NEUTRAL);
         clients::unregister(&self.current, std::process::id() as i32);
         let live = zmx::list();
@@ -294,7 +303,11 @@ impl Runner {
                     }
                     Ok(n) => {
                         self.kbd.feed(&buf[..n]);
-                        if sys::write_all(STDOUT, &buf[..n]).is_err() {
+                        let out = match self.cfg.title {
+                            true => self.titles.filter(&buf[..n]),
+                            false => std::borrow::Cow::Borrowed(&buf[..n]),
+                        };
+                        if sys::write_all(STDOUT, &out).is_err() {
                             self.detach();
                             return 1;
                         }

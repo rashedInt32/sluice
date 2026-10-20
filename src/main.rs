@@ -6,6 +6,7 @@ mod keys;
 mod picker;
 mod runner;
 mod sys;
+mod title;
 mod zmx;
 
 use config::Config;

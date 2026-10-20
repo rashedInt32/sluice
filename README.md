@@ -95,6 +95,7 @@ bind s run ~/.config/sluice/bin/sessionizer
 bind j run printf 'main\n'       # any command printing "name" or "name<TAB>dir"
 unbind x
 sessionizer ~/bin/my-projects    # what bare `sluice` runs with no sessions; defaults to the `s` command
+title on                         # the window title is the session name; see below
 ```
 
 `run` commands get the tty, so they can use fzf themselves. They print the session to attach, and optionally the directory to create it in.
@@ -179,6 +180,8 @@ fi
 ```
 
 Every new Ghostty split or tab then starts in the picker.
+
+Session name in the window title, like tmux's status line: put `title on` in the config. sluice sets the title to the session on every switch and drops the titles programs inside set (zsh, nvim, Claude), so they cannot overwrite it. The directory report (OSC 7) still passes, so Ghostty keeps its folder icon beside the name. Ghostty ignores titles while its own `title = ...` option is set, so remove that line. The default, `title off`, leaves output byte-for-byte untouched.
 
 Session name in the prompt:
 

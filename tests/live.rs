@@ -1122,3 +1122,31 @@ fn an_armed_prefix_does_not_survive_a_switch() {
     kill_session(&b);
     let _ = std::fs::remove_dir_all(&state);
 }
+
+#[test]
+fn title_on_shows_the_session_and_keeps_programs_from_changing_it() {
+    if !zmx_present() {
+        return;
+    }
+    let s = uniq("title");
+    let cfg = std::env::temp_dir().join(format!("sluice-cfg-title-{}", std::process::id()));
+    std::fs::create_dir_all(cfg.join("sluice")).unwrap();
+    std::fs::write(cfg.join("sluice/config"), "title on\n").unwrap();
+    let xdg = cfg.to_str().unwrap().to_string();
+
+    let p = spawn(&[&s], &[("XDG_CONFIG_HOME", &xdg)]);
+    let seen = p.expect("$", Duration::from_secs(5));
+    assert!(seen.contains(&format!("\x1b]2;{s}\x07")), "no title set: {seen:?}");
+
+    // the shell sets a title of its own, then a directory report: only the
+    // directory gets through, since it draws the folder icon
+    p.send(b"printf '\\033]2;from-shell\\007\\033]7;file://h/tmp\\007'; echo done-$((1+1))\r");
+    let seen = p.expect("done-2", Duration::from_secs(5));
+    assert!(!seen.contains("\x1b]2;from-shell"), "a program's title leaked: {seen:?}");
+    assert!(seen.contains("\x1b]7;file://h/tmp\x07"), "OSC 7 was dropped: {seen:?}");
+
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    kill_session(&s);
+    let _ = std::fs::remove_dir_all(&cfg);
+}

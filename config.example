@@ -7,6 +7,11 @@ prefix C-a
 # else exits; `close` exits at once, which closes the window under the zshrc snippet.
 on-end previous
 
+# `on`: the window title is the session name, and programs inside cannot
+# change it (tmux's status line, in the titlebar). Remove Ghostty's own
+# `title = ...` line, or it ignores every title.
+title off
+
 # What a bare `sluice` runs when no session is live, or the picker is
 # cancelled. Without this line it is whatever `s` runs below.
 # sessionizer ~/.config/sluice/bin/sessionizer
