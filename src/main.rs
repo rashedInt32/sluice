@@ -369,7 +369,8 @@ fn wait_detached(targets: &[String], before: usize, reached: &[(&String, i32)]) 
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    for ms in [0, 5, 10, 20, 40, 80] {
+    // About a second in all, as long as the old fixed loop gave it.
+    for ms in [0, 5, 10, 20, 40, 80, 160, 320, 400] {
         std::thread::sleep(std::time::Duration::from_millis(ms));
         if clients_on(&zmx::list(), targets) + reached.len() <= before {
             return;
