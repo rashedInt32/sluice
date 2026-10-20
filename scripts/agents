@@ -19,7 +19,9 @@
 # to rule that out: the whole command, not argv[0], so an install that runs
 # Claude as `node .../cli.js` is recognised while a bare node is not.
 #
-#   Row: rank \t session \t pid \t icon \t age \t path
+#   Row: rank \t session \t pid \t age, all plain, then the shown columns in
+#   glass's prism colours: name \t pid \t status \t age \t path. The picker
+#   reads the session and pid back from fields 2 and 3; the sort reads field 4.
 set -uo pipefail
 
 base="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
@@ -71,6 +73,8 @@ agent_env() {
   zmx list --short 2>/dev/null | sed $'s/^/S\t/'
   printf '%s\n' "$rows" | sed $'s/^/A\t/'
 } | awk -F'\t' -v now="$(date +%s)" -v home="$HOME" '
+  function paint(rgb, t) { return "\033[38;2;" rgb "m" t "\033[0m" }
+  function dot(rgb)      { return paint(rgb, "●") }
   $1 == "E" { sess_of[$2] = $3; cmd_of[$2] = $4; next }
   $1 == "S" { live[$2] = 1; next }
   $1 == "A" {
@@ -80,17 +84,21 @@ agent_env() {
     if (s == "" || !(s in live)) next            # not in a session we can reach
     if (cmd_of[pid] !~ /claude/) next            # stale file on a recycled pid
 
-    if      (status == "waiting") { icon = "\033[33m●\033[0m waiting"; rank = 0 }
-    else if (status == "idle")    { icon = "\033[32m●\033[0m idle   "; rank = 1 }
-    else if (status == "shell")   { icon = "\033[36m●\033[0m shell  "; rank = 1 }
-    else if (status == "busy")    { icon = "\033[31m●\033[0m working"; rank = 3 }
-    else                          { icon = "\033[90m●\033[0m   ?    "; rank = 2 }
+    # prism: waiting is warn yellow (it needs you), idle ok green, working
+    # cmd blue (busy, not failed), shell str cyan, unknown faint grey
+    if      (status == "waiting") { icon = dot("255;242;0")   " waiting"; rank = 0 }
+    else if (status == "idle")    { icon = dot("50;255;126")  " idle   "; rank = 1 }
+    else if (status == "shell")   { icon = dot("78;180;211")  " shell  "; rank = 1 }
+    else if (status == "busy")    { icon = dot("77;150;255")  " working"; rank = 3 }
+    else                          { icon = dot("108;108;108") "   ?    "; rank = 2 }
 
     age = (upd > 0) ? int((now - upd / 1000) / 60) "m" : "-"
 
     path = cwd
     if (index(path, home) == 1) path = "~" substr(path, length(home) + 1)
 
-    printf "%s\t%s\t%s\t%s\t%5s\t%s\n", rank, s, pid, icon, age, path
+    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", rank, s, pid, age,
+      paint("220;220;220", s), paint("138;138;138", pid), icon,
+      paint("154;154;154", sprintf("%5s", age)), paint("154;154;154", path)
   }
-' | sort -t$'\t' -k1,1n -k5,5n
+' | sort -t$'\t' -k1,1n -k4,4n
