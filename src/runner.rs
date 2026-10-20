@@ -43,11 +43,17 @@ enum Flow {
 }
 
 impl Runner {
-    pub fn start(cfg: Config, name: &str, cwd: Option<&str>) -> std::io::Result<Runner> {
+    /// `live` is a fresh `zmx list`, taken by the caller anyway.
+    pub fn start(
+        cfg: Config,
+        name: &str,
+        cwd: Option<&str>,
+        live: &[Session],
+    ) -> std::io::Result<Runner> {
         let sig_fd = sys::signal_pipe()?;
         let raw = RawMode::enter()?;
         let scanner = Scanner::new(cfg.prefix);
-        let target = Self::resolve(name, &zmx::list(), &HashMap::new());
+        let target = Self::resolve(name, live, &HashMap::new());
         let mut r = Runner {
             cfg,
             raw,

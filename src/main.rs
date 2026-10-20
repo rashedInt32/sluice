@@ -77,10 +77,6 @@ fn real_main(args: &[String]) -> i32 {
         _ => {}
     }
 
-    if !zmx::available() {
-        eprintln!("sluice: zmx not found on PATH (brew install neurosnap/tap/zmx)");
-        return 1;
-    }
     if let Ok(s) = std::env::var("ZMX_SESSION") {
         eprintln!("sluice: already inside zmx session `{s}`; use the prefix keys instead");
         return 1;
@@ -89,6 +85,23 @@ fn real_main(args: &[String]) -> i32 {
         eprintln!("sluice: stdin is not a terminal");
         return 1;
     }
+    // The session's screen goes to stdout, so it must be the terminal too.
+    if unsafe { libc::isatty(libc::STDOUT_FILENO) } == 0 {
+        eprintln!("sluice: stdout is not a terminal");
+        return 1;
+    }
+    // One `zmx list` both proves zmx runs and serves the attach below.
+    let live = match zmx::try_list() {
+        Ok(v) => v,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!("sluice: zmx not found on PATH (brew install neurosnap/tap/zmx)");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("sluice: cannot run zmx: {e}");
+            return 1;
+        }
+    };
 
     let (cfg, warnings) = Config::load();
     for w in &warnings {
@@ -105,9 +118,9 @@ fn real_main(args: &[String]) -> i32 {
         };
         let cwd = cwd.unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
-        let name = here_name(&cwd, home.as_deref(), &zmx::list_groups());
+        let name = here_name(&cwd, home.as_deref(), &zmx::groups(&live));
         let dir = cwd.to_string_lossy().into_owned();
-        return match runner::Runner::start(cfg, &name, Some(&dir)) {
+        return match runner::Runner::start(cfg, &name, Some(&dir), &live) {
             Ok(r) => r.run(),
             Err(e) => {
                 eprintln!("sluice: {e}");
@@ -116,10 +129,12 @@ fn real_main(args: &[String]) -> i32 {
         };
     }
 
-    let (name, cwd) = match parse_attach_args(args) {
-        Ok(Some(x)) => x,
-        Ok(None) => match pick_or_sessionize(&cfg) {
-            Some(c) => (c.name, c.cwd),
+    let (name, cwd, live) = match parse_attach_args(args) {
+        Ok(Some((name, cwd))) => (name, cwd, live),
+        // The picker and the sessionizer can take a while, and the picker
+        // can kill sessions: list again after them.
+        Ok(None) => match pick_or_sessionize(&cfg, &live) {
+            Some(c) => (c.name, c.cwd, zmx::list()),
             None => return 3,
         },
         Err(msg) => {
@@ -129,7 +144,7 @@ fn real_main(args: &[String]) -> i32 {
         }
     };
 
-    match runner::Runner::start(cfg, &name, cwd.as_deref()) {
+    match runner::Runner::start(cfg, &name, cwd.as_deref(), &live) {
         Ok(r) => r.run(),
         Err(e) => {
             eprintln!("sluice: {e}");
@@ -437,8 +452,8 @@ fn parse_attach_args(args: &[String]) -> Result<Option<(String, Option<String>)>
 
 /// No name given: fzf over live sessions; with none (or on cancel) fall through
 /// to the sessionizer so a fresh terminal can start a project directly.
-fn pick_or_sessionize(cfg: &Config) -> Option<picker::Choice> {
-    let sessions = zmx::list_groups();
+fn pick_or_sessionize(cfg: &Config, live: &[zmx::Session]) -> Option<picker::Choice> {
+    let sessions = zmx::groups(live);
     if !sessions.is_empty() {
         let header = "j/k move · 1-9 jump · enter attach · ctrl-x kill · ctrl-d detach · i search · q new project";
         if let Some(name) = picker::pick_session(&sessions, "", header) {

@@ -22,9 +22,14 @@ pub struct Session {
 /// Live sessions in creation order, oldest first. That is the order the
 /// numbered jumps use, so a new session never renumbers an old one.
 pub fn list() -> Vec<Session> {
-    let out = Command::new("zmx").arg("list").output();
-    let Ok(out) = out else { return Vec::new() };
-    parse_list(&String::from_utf8_lossy(&out.stdout))
+    try_list().unwrap_or_default()
+}
+
+/// As `list`, but a zmx that cannot be run is an error rather than no
+/// sessions. Startup uses it in place of a separate `zmx version` probe.
+pub fn try_list() -> std::io::Result<Vec<Session>> {
+    let out = Command::new("zmx").arg("list").output()?;
+    Ok(parse_list(&String::from_utf8_lossy(&out.stdout)))
 }
 
 pub fn parse_list(text: &str) -> Vec<Session> {
@@ -97,14 +102,6 @@ fn cwd_path(v: &str) -> String {
 pub fn kill(name: &str) -> bool {
     Command::new("zmx")
         .args(["kill", name])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-pub fn available() -> bool {
-    Command::new("zmx")
-        .arg("version")
         .output()
         .map(|o| o.status.success())
         .unwrap_or(false)
