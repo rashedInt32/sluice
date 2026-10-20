@@ -176,7 +176,12 @@ fn self_exe() -> String {
         .ok()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "sluice".to_string());
-    format!("'{}'", exe.replace('\'', r"'\''"))
+    sh_quote(&exe)
+}
+
+/// One shell word, whatever `s` holds.
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 /// The current session reaches the reload through `$SLUICE_CURRENT`, never
@@ -229,41 +234,9 @@ fn fzf_with(
 ) -> Option<String> {
     let mut cmd = Command::new("fzf");
     cmd.envs(vars.iter().copied());
-    cmd.args([
-        "--delimiter=\t",
-        "--with-nth=1",
-        "--nth=1",
-        "--ansi",
-        "--layout=reverse",
-        "--no-sort",
-        "--cycle",
-        "--info=inline-right",
-        "--tiebreak=index",
-        "--margin=1,2",
-        "--input-border=rounded",
-        "--list-border=rounded",
-        "--highlight-line",
-        "--pointer=▌",
-        // fzf draws ▌ down the gutter of every row by default
-        "--gutter= ",
-        "--ghost=i search",
-    ]);
-    cmd.arg(format!(
-        "--color=bg+:{ROW_BG},fg+:{WHITE}:bold,gutter:-1,pointer:{ORANGE},\
-         list-border:{ORANGE},list-label:{ORANGE}:bold,\
-         input-border:{FAINT},input-label:{FAINT},prompt:{FAINT},\
-         preview-border:{RULE},preview-label:{NUM},\
-         query:{TEXT},ghost:{RULE},info:{META},hl:{CYAN},hl+:{CYAN}:bold"
-    ));
-    cmd.arg(format!("--prompt={NAV_PROMPT}"));
-    cmd.arg(format!("--list-label= {label} "));
-    cmd.args(nav_binds(label));
+    cmd.args(["--delimiter=\t", "--with-nth=1", "--nth=1"]);
+    cmd.args(style_args(label, hints, ORANGE));
     cmd.args(extra);
-    if !hints.is_empty() {
-        cmd.arg(format!("--footer={}", footer(hints)));
-        // inside the list box, under a rule, rather than on a line of its own
-        cmd.arg("--footer-border=inline");
-    }
     if let Some(p) = preview {
         cmd.arg(format!("--preview={p}"));
         // List on top at full width, the session's screen below it. Side by
@@ -290,6 +263,52 @@ fn fzf_with(
     Some(line.rsplit('\t').next().unwrap_or(line).to_string())
 }
 
+/// The look and the nav keys every sluice picker shares, `accent` marking
+/// focus. Also printed by `sluice picker-style` for the bundled scripts, so
+/// the agent picker cannot drift from this one. Fields and preview are the
+/// caller's.
+pub fn style_args(label: &str, hints: &str, accent: &str) -> Vec<String> {
+    let mut v: Vec<String> = [
+        "--ansi",
+        "--layout=reverse",
+        "--no-sort",
+        "--cycle",
+        "--info=inline-right",
+        "--tiebreak=index",
+        "--margin=1,2",
+        "--input-border=rounded",
+        "--list-border=rounded",
+        "--highlight-line",
+        "--pointer=▌",
+        // fzf draws ▌ down the gutter of every row by default
+        "--gutter= ",
+        "--ghost=i search",
+    ]
+    .map(String::from)
+    .to_vec();
+    v.push(format!(
+        "--color=bg+:{ROW_BG},fg+:{WHITE}:bold,gutter:-1,pointer:{accent},\
+         list-border:{accent},list-label:{accent}:bold,\
+         input-border:{FAINT},input-label:{FAINT},prompt:{FAINT},\
+         preview-border:{RULE},preview-label:{NUM},\
+         query:{TEXT},ghost:{RULE},info:{META},hl:{CYAN},hl+:{CYAN}:bold"
+    ));
+    v.push(format!("--prompt={NAV_PROMPT}"));
+    v.push(format!("--list-label= {label} "));
+    v.extend(nav_binds(label, accent));
+    if !hints.is_empty() {
+        v.push(format!("--footer={}", footer(hints)));
+        // inside the list box, under a rule, rather than on a line of its own
+        v.push("--footer-border=inline".into());
+    }
+    v
+}
+
+/// `#rrggbb`, the only colour form `paint` and fzf's `--color` share.
+pub fn is_hex_colour(s: &str) -> bool {
+    s.len() == 7 && s.starts_with('#') && s[1..].bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// `j/k move · q back` as blue keys and faint words.
 fn footer(hints: &str) -> String {
     hints
@@ -312,13 +331,14 @@ const NAV_PROMPT: &str = "❯ ";
 /// typing; Esc there returns to nav. Same shape as the user's tmux pickers.
 ///
 /// fzf cannot recolour a border once it is drawn, so focus moves through the
-/// text instead: search mode paints the prompt and an input label orange and
-/// dims the list label. Nav mode's plain text takes the `--color` defaults.
-fn nav_binds(label: &str) -> Vec<String> {
+/// text instead: search mode paints the prompt and an input label in the
+/// accent and dims the list label. Nav mode's plain text takes the `--color`
+/// defaults.
+fn nav_binds(label: &str, accent: &str) -> Vec<String> {
     let to_search = format!(
         "unbind({NAV_KEYS})+change-prompt({})+change-input-label( {} )+change-list-label( {} )+change-ghost()",
-        paint(ORANGE, true, "/ "),
-        paint(ORANGE, true, "search"),
+        paint(accent, true, "/ "),
+        paint(accent, true, "search"),
         paint(FAINT, false, label),
     );
     let to_nav = format!(
@@ -343,10 +363,14 @@ fn nav_binds(label: &str) -> Vec<String> {
 }
 
 /// Run a user script with the tty attached; parse its first stdout line.
+/// `$SLUICE` names this binary, so a script can call back into the sluice
+/// that ran it rather than whichever is first on PATH.
 pub fn run_script(cmd: &str) -> Option<Choice> {
+    let exe = std::env::current_exe().unwrap_or_else(|_| "sluice".into());
     let out = Command::new("sh")
         .arg("-c")
         .arg(cmd)
+        .envs([("SLUICE", exe)])
         .stdin(Stdio::inherit())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -395,7 +419,7 @@ mod tests {
 
     #[test]
     fn nav_binds_cover_move_jump_search_and_close() {
-        let b = nav_binds("sessions").join("\n");
+        let b = nav_binds("sessions", ORANGE).join("\n");
         for needle in [
             "--bind=j:down",
             "--bind=k:up",
@@ -522,6 +546,22 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn the_shared_style_takes_the_accent_and_leaves_fields_alone() {
+        let v = style_args("✻ agents", "q back", "#8c6ff0");
+        let all = v.join("\n");
+        assert!(all.contains("pointer:#8c6ff0,list-border:#8c6ff0"), "{all}");
+        assert!(all.contains("\x1b[1;38;2;140;111;240m/ "), "search prompt in the accent");
+        assert!(all.contains("--list-label= ✻ agents "));
+        assert!(all.contains("--bind=5:pos(5)+accept"), "digits jump in every picker");
+        assert!(all.contains("--footer="));
+        assert!(
+            !v.iter().any(|a| a.starts_with("--nth") || a.starts_with("--with-nth") || a.starts_with("--delimiter")),
+            "fields belong to the caller"
+        );
+        assert!(is_hex_colour("#8c6ff0") && !is_hex_colour("red") && !is_hex_colour("#12345g"));
     }
 
     #[test]

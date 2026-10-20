@@ -9,8 +9,9 @@
 # An agent inside nvim shows up like any other: it inherits ZMX_SESSION from
 # the session hosting the editor, so jumping to it puts you in that pane.
 #
-# Opens in vim-style nav mode, like sluice's own pickers: j/k move, enter
-# jumps, ctrl-x kills the agent, i or / drops into search, q or esc backs out.
+# Opens in vim-style nav mode, like sluice's own pickers: j/k move, 1-9 or
+# enter jump, ctrl-x kills the agent, i or / drops into search, q or esc backs
+# out.
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -32,36 +33,24 @@ done
 # Columns 5.. are shown, painted; 1..4 are the sort keys and the plain session
 # and pid, and stay hidden. The chosen session is read back out of column 2.
 #
-# The look is sluice's own picker (src/picker.rs) with one change: prism's
+# The look and the nav keys come from sluice itself (`sluice picker-style`),
+# so this picker cannot drift from the session picker. One change: prism's
 # purple where the session picker has orange, so the two never read as one.
-# Hex values are copied from picker.rs; keep them in step.
-nav='j,k,q,i,a,/'
-purple=$'\e[1;38;2;140;111;240m' faint=$'\e[38;2;108;108;108m'
-blue=$'\e[1;38;2;77;150;255m' reset=$'\e[0m'
-label=' ✻ agents '
-hint() { printf '%s%s%s %s%s%s' "$blue" "$1" "$reset" "$faint" "$2" "$reset"; }
-footer="$(hint j/k move)  $(hint enter jump)  $(hint ctrl-x kill)  $(hint i search)  $(hint q back)"
-to_search="unbind($nav)+change-prompt(${purple}/ ${reset})+change-input-label( ${purple}search${reset} )+change-list-label(${faint}${label}${reset})+change-ghost()"
-to_nav="rebind($nav)+change-prompt(❯ )+change-input-label()+change-list-label($label)+change-ghost(i search)"
-sel="$(fzf </dev/null \
+# sluice sets $SLUICE to its own binary when it runs this script.
+style_words="$("${SLUICE:-sluice}" picker-style --label '✻ agents' --accent '#8c6ff0' \
+  --hints 'j/k move · 1-9/enter jump · ctrl-x kill · i search · q back')" || {
+  echo "claude-picker: needs a sluice with picker-style on PATH" >&2
+  sleep 1.5
+  exit 1
+}
+# Every word arrives shell-quoted by sluice, so eval only rebuilds the array.
+eval "style=($style_words)"
+sel="$(fzf </dev/null "${style[@]}" \
   --bind="start:reload('$DIR/agents')" \
-  --delimiter=$'\t' --with-nth='5..' --ansi \
-  --layout=reverse --no-sort --cycle --info=inline-right --tiebreak=index \
-  --margin=1,2 --input-border=rounded --list-border=rounded \
-  --highlight-line --pointer='▌' --gutter=' ' --ghost='i search' \
-  --color='bg+:#0e2a3a,fg+:#ffffff:bold,gutter:-1,pointer:#8c6ff0' \
-  --color='list-border:#8c6ff0,list-label:#8c6ff0:bold' \
-  --color='input-border:#6c6c6c,input-label:#6c6c6c,prompt:#6c6c6c' \
-  --color='preview-border:#565656,preview-label:#8a8a8a' \
-  --color='query:#dcdcdc,ghost:#565656,info:#9a9a9a,hl:#4eb4d3,hl+:#4eb4d3:bold' \
-  --prompt='❯ ' --list-label="$label" \
-  --footer="$footer" --footer-border=inline \
+  --delimiter=$'\t' --with-nth='5..' \
   --preview='zmx history {2} --vt --screen' \
   --preview-window='down,50%,border-rounded' \
   --bind="focus:transform-preview-label:printf ' %s ' {2}" \
-  --bind='j:down' --bind='k:up' --bind='q:abort' \
-  --bind="i:$to_search" --bind="a:$to_search" --bind="/:$to_search" \
-  --bind="esc:transform:[ \"\$FZF_PROMPT\" = '❯ ' ] && echo abort || echo \"$to_nav\"" \
   --bind="ctrl-x:execute-silent(kill {3})+reload(sleep 0.4; '$DIR/claude-picker' --list)" \
   --bind="ctrl-l:reload('$DIR/claude-picker' --list)")"
 

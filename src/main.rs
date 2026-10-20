@@ -32,6 +32,9 @@ usage:
                                       pass the prefix key through to the program
                                       (for loom.nvim); session defaults to $ZMX_SESSION,
                                       pid to the caller; a dead pid ends the handoff
+  sluice picker-style [--label L] [--accent #rrggbb] [--hints H]
+                                      the pickers' fzf look and nav keys as quoted
+                                      shell words, for a script's own fzf
   sluice --version | --help
 
 exit codes: 0 detached or session ended, 3 nothing picked, 1 error
@@ -64,6 +67,7 @@ fn real_main(args: &[String]) -> i32 {
         Some("detach") | Some("d") => return control_cmd("detach", &args[1..]),
         Some("switch") => return control_cmd("switch", &args[1..]),
         Some("kill") => return kill_cmd(&args[1..]),
+        Some("picker-style") => return picker_style_cmd(&args[1..]),
         Some("keys") => {
             let (cfg, warnings) = Config::load();
             for w in &warnings {
@@ -213,6 +217,37 @@ fn list_cmd(args: &[String]) -> i32 {
             );
         }
     }
+    0
+}
+
+/// `picker-style [--label L] [--accent #rrggbb] [--hints H]`: the shared fzf
+/// look and nav keys as shell words, for a script to `eval` into an array.
+/// Every word is quoted, so the output is safe to eval whatever the inputs.
+fn picker_style_cmd(args: &[String]) -> i32 {
+    let (mut label, mut accent, mut hints) = ("", "#ff9f1a", "");
+    let mut i = 0;
+    while i < args.len() {
+        let val = args.get(i + 1).map(String::as_str);
+        match (args[i].as_str(), val) {
+            ("--label", Some(v)) => label = v,
+            ("--accent", Some(v)) if picker::is_hex_colour(v) => accent = v,
+            ("--accent", Some(v)) => {
+                eprintln!("sluice: picker-style: --accent wants #rrggbb, not `{v}`");
+                return 2;
+            }
+            ("--hints", Some(v)) => hints = v,
+            (other, _) => {
+                eprintln!("sluice: picker-style: bad argument {other}");
+                return 2;
+            }
+        }
+        i += 2;
+    }
+    let words: Vec<String> = picker::style_args(label, hints, accent)
+        .iter()
+        .map(|w| picker::sh_quote(w))
+        .collect();
+    println!("{}", words.join(" "));
     0
 }
 
