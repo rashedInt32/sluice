@@ -234,6 +234,18 @@ fn parse_action(s: &str) -> Option<Action> {
     }
 }
 
+/// `$HOME/x` as `~/x`, for display: the defaults are absolute paths, while
+/// the config the user wrote says `~`.
+fn tilde(cmd: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() => match cmd.strip_prefix(h.as_str()) {
+            Some(rest) if rest.starts_with('/') => format!("~{rest}"),
+            _ => cmd.to_string(),
+        },
+        _ => cmd.to_string(),
+    }
+}
+
 fn describe_action(a: &Action) -> String {
     match a {
         Action::Pick => "pick a session".into(),
@@ -246,7 +258,7 @@ fn describe_action(a: &Action) -> String {
         Action::NextWindow => "next window".into(),
         Action::PrevWindow => "previous window".into(),
         Action::Help => "this list".into(),
-        Action::Run(cmd) => format!("run {cmd}"),
+        Action::Run(cmd) => format!("run {}", tilde(cmd)),
     }
 }
 
@@ -315,6 +327,14 @@ mod tests {
         assert_eq!(s("bind s pick"), None);
         let (_, w) = Config::parse("sessionizer");
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn run_commands_show_home_as_tilde() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(tilde(&format!("{home}/.config/x")), "~/.config/x");
+        assert_eq!(tilde("~/y"), "~/y");
+        assert_eq!(tilde(&format!("{home}x/z")), format!("{home}x/z"), "not a prefix dir");
     }
 
     #[test]

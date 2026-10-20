@@ -21,6 +21,7 @@ usage:
   sluice                              pick a session; run the sessionizer if none
   sluice list [--rows [--current S]]  numbered sessions, in jump order;
                                       --rows prints them as the picker draws them
+  sluice list --windows               every window, one zmx session per line
   sluice keys                         show the active prefix bindings
   sluice kill <name>                  kill a session with all its windows, or one
                                       window named as <session>+<n>
