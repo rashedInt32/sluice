@@ -457,7 +457,7 @@ impl Runner {
                     extra.extend(picker::focus_binds(here));
                     picker::fzf_with(
                         &lines,
-                        "session > ",
+                        "sessions",
                         header,
                         Some("zmx history {2} --vt --screen"),
                         &extra,
@@ -478,7 +478,7 @@ impl Runner {
                     .map(|l| format!("{l}\t"))
                     .collect();
                 let _ = self.with_tty(|| {
-                    picker::fzf(&lines, "sluice ", "prefix bindings   q/esc back", None)
+                    picker::fzf(&lines, "prefix bindings", "q/esc back", None)
                 });
                 self.finish_switch(None)
             }
@@ -492,7 +492,7 @@ impl Runner {
                     "no\tno".to_string(),
                 ];
                 let confirmed =
-                    self.with_tty(|| picker::fzf(&lines, "kill? ", "", None)) == Some("yes".into());
+                    self.with_tty(|| picker::fzf(&lines, "kill?", "", None)) == Some("yes".into());
                 if !confirmed {
                     return self.finish_switch(None);
                 }

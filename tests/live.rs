@@ -382,7 +382,7 @@ fn help_overlay_and_picker_draw_then_return() {
     p.expect("back-from-help", Duration::from_secs(5));
 
     p.send(b"\x01f");
-    let out = p.expect("session >", Duration::from_secs(5));
+    let out = p.expect("sessions", Duration::from_secs(5));
     assert!(out.contains(&name) || p.expect(&name, Duration::from_secs(3)).contains(&name));
     p.send(b"\x1b");
     p.drain(Duration::from_millis(500));
@@ -804,7 +804,7 @@ fn the_picker_kills_a_session_and_redraws_without_it() {
     p.expect("$", Duration::from_secs(5));
 
     p.send(b"\x01f");
-    p.expect("session >", Duration::from_secs(5));
+    p.expect("sessions", Duration::from_secs(5));
     // search mode, so the row can be named rather than counted to
     p.send(b"i");
     p.drain(Duration::from_millis(300));
@@ -865,7 +865,7 @@ fn killing_the_session_you_are_in_falls_back_to_another() {
     p.drain(Duration::from_millis(300));
 
     p.send(b"\x01f");
-    p.expect("session >", Duration::from_secs(5));
+    p.expect("sessions", Duration::from_secs(5));
     p.send(b"i");
     p.drain(Duration::from_millis(300));
     p.send(mine.as_bytes());
@@ -920,7 +920,7 @@ fn the_session_picker_opens_on_the_current_session() {
     // open the picker and accept straight away: the cursor must already be on
     // `second`, the session this pane shows, not on `first` at the top
     p.send(b"\x01f");
-    p.expect("session >", Duration::from_secs(5));
+    p.expect("sessions", Duration::from_secs(5));
     p.drain(Duration::from_millis(400));
     p.send(b"\r");
     p.drain(Duration::from_millis(800));
@@ -932,7 +932,7 @@ fn the_session_picker_opens_on_the_current_session() {
 
     // and moving one row up from there reaches `first`
     p.send(b"\x01f");
-    p.expect("session >", Duration::from_secs(5));
+    p.expect("sessions", Duration::from_secs(5));
     p.drain(Duration::from_millis(400));
     p.send(b"k\r");
     p.drain(Duration::from_millis(800));
@@ -1062,7 +1062,8 @@ fn prefix_x_kills_only_the_window_on_screen() {
     p.wait_clients(&w2, Some(1), Duration::from_secs(5));
 
     p.send(b"\x01x");
-    p.expect("kill?", Duration::from_secs(5));
+    // the row, not the box label: fzf can draw the label before the rows load
+    p.expect("yes, kill", Duration::from_secs(5));
     p.send(b"\r"); // first row is "yes"
     p.wait_clients(&w2, None, Duration::from_secs(8));
     p.wait_clients(&s, Some(1), Duration::from_secs(8));

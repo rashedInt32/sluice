@@ -444,7 +444,7 @@ fn pick_or_sessionize(cfg: &Config) -> Option<picker::Choice> {
         let header = "j/k move · 1-9 jump · enter attach · ctrl-x kill · ctrl-d detach · i search · q new project";
         if let Some(name) = picker::fzf_with(
             &lines,
-            "session > ",
+            "sessions",
             header,
             Some("zmx history {2} --vt --screen"),
             &picker::session_binds(""),

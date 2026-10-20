@@ -1,10 +1,31 @@
 //! Full-screen pickers. fzf owns the tty while it runs; we only hand it lines on
 //! stdin and read the choice back on stdout, exactly like the user's shell
-//! scripts do, so FZF_DEFAULT_OPTS and their colours apply unchanged.
+//! scripts do. The look is our own: boxed input and list, prism's colours.
 
 use crate::zmx::Group;
 use std::io::Write;
 use std::process::{Command, Stdio};
+
+// glass's prism palette (glass/hooks/palette.ts), copied by role. Orange marks
+// focus: the list box in nav mode, the prompt and its label in search mode.
+const ORANGE: &str = "#ff9f1a"; // heading3
+const BLUE: &str = "#4d96ff"; // cmd: keys in the hints
+const CYAN: &str = "#4eb4d3"; // str: search matches
+const GREEN: &str = "#32ff7e"; // ok: the session you are in
+const TEXT: &str = "#dcdcdc"; // calloutText: session names
+const WHITE: &str = "#ffffff"; // bold: the row under the cursor
+const META: &str = "#9a9a9a"; // paths, counts
+const NUM: &str = "#8a8a8a"; // orderedNum: row numbers
+const FAINT: &str = "#6c6c6c"; // idle input box, hint words
+const RULE: &str = "#565656"; // preview box
+const ROW_BG: &str = "#0e2a3a"; // rowHover
+
+/// `s` in a 24-bit colour, then reset.
+fn paint(hex: &str, bold: bool, s: &str) -> String {
+    let ch = |i: usize| u8::from_str_radix(&hex[1 + 2 * i..3 + 2 * i], 16).unwrap_or(0);
+    let b = if bold { "1;" } else { "" };
+    format!("\x1b[{b}38;2;{};{};{}m{s}\x1b[0m", ch(0), ch(1), ch(2))
+}
 
 pub struct Choice {
     pub name: String,
@@ -65,7 +86,10 @@ pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
         .iter()
         .enumerate()
         .map(|(i, s)| {
-            let mark = if s.name == current { '*' } else { ' ' };
+            let mark = match s.name == current {
+                true => paint(GREEN, false, "●"),
+                false => " ".into(),
+            };
             let n = if i < 9 {
                 (i + 1).to_string()
             } else {
@@ -76,13 +100,18 @@ pub fn session_lines(groups: &[Group], current: &str) -> Vec<String> {
                 k => format!("{k}w "),
             };
             let clients = match s.clients {
-                0 => "    ".to_string(),
+                0 => "   ".to_string(),
                 1 => " 1 ".to_string(),
                 c => format!("{c:>2} "),
             };
+            // pad before painting: escape codes would count toward the width
             format!(
-                "{n:>1}{mark} {:<w$}  {windows}{clients} {}\t{}",
-                s.name, s.cwd, s.name
+                "{} {mark} {}  {}{}\t{}",
+                paint(NUM, false, &n),
+                paint(TEXT, false, &format!("{:<w$}", s.name)),
+                paint(META, false, &format!("{windows}{clients} ")),
+                paint(META, false, &s.cwd),
+                s.name
             )
         })
         .collect()
@@ -143,15 +172,16 @@ fn session_binds_with(exe: &str, current: &str) -> Vec<String> {
 }
 
 /// Run fzf over `lines`; returns the hidden field (after the last TAB) of the pick.
-pub fn fzf(lines: &[String], prompt: &str, header: &str, preview: Option<&str>) -> Option<String> {
-    fzf_with(lines, prompt, header, preview, &[])
+/// `label` titles the list box; `hints` is `key word · key word`, shown under it.
+pub fn fzf(lines: &[String], label: &str, hints: &str, preview: Option<&str>) -> Option<String> {
+    fzf_with(lines, label, hints, preview, &[])
 }
 
 /// As `fzf`, plus extra `--bind` arguments.
 pub fn fzf_with(
     lines: &[String],
-    prompt: &str,
-    header: &str,
+    label: &str,
+    hints: &str,
     preview: Option<&str>,
     extra: &[String],
 ) -> Option<String> {
@@ -164,20 +194,39 @@ pub fn fzf_with(
         "--layout=reverse",
         "--no-sort",
         "--cycle",
-        "--info=inline",
+        "--info=inline-right",
         "--tiebreak=index",
+        "--margin=1,2",
+        "--input-border=rounded",
+        "--list-border=rounded",
+        "--highlight-line",
+        "--pointer=▌",
+        // fzf draws ▌ down the gutter of every row by default
+        "--gutter= ",
+        "--ghost=i search",
     ]);
-    cmd.arg(format!("--prompt={prompt}"));
-    cmd.args(nav_binds(prompt));
+    cmd.arg(format!(
+        "--color=bg+:{ROW_BG},fg+:{WHITE}:bold,gutter:-1,pointer:{ORANGE},\
+         list-border:{ORANGE},list-label:{ORANGE}:bold,\
+         input-border:{FAINT},input-label:{FAINT},prompt:{FAINT},\
+         preview-border:{RULE},preview-label:{NUM},\
+         query:{TEXT},ghost:{RULE},info:{META},hl:{CYAN},hl+:{CYAN}:bold"
+    ));
+    cmd.arg(format!("--prompt={NAV_PROMPT}"));
+    cmd.arg(format!("--list-label= {label} "));
+    cmd.args(nav_binds(label));
     cmd.args(extra);
-    if !header.is_empty() {
-        cmd.arg(format!("--header={header}"));
+    if !hints.is_empty() {
+        cmd.arg(format!("--footer={}", footer(hints)));
+        // inside the list box, under a rule, rather than on a line of its own
+        cmd.arg("--footer-border=inline");
     }
     if let Some(p) = preview {
         cmd.arg(format!("--preview={p}"));
         // List on top at full width, the session's screen below it. Side by
         // side, the list lost its directories to the preview's half.
-        cmd.arg("--preview-window=down,50%,border-top");
+        cmd.arg("--preview-window=down,50%,border-rounded");
+        cmd.arg("--bind=focus:transform-preview-label:printf ' %s ' {2}");
     }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -198,15 +247,40 @@ pub fn fzf_with(
     Some(line.rsplit('\t').next().unwrap_or(line).to_string())
 }
 
+/// `j/k move · q back` as blue keys and faint words.
+fn footer(hints: &str) -> String {
+    hints
+        .split(" · ")
+        .map(|h| match h.split_once(' ') {
+            Some((key, word)) => format!("{} {}", paint(BLUE, true, key), paint(FAINT, false, word)),
+            None => paint(BLUE, true, h),
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
+}
+
 const NAV_KEYS: &str = "j,k,q,i,a,/,1,2,3,4,5,6,7,8,9";
-pub const SEARCH_PROMPT: &str = "search > ";
+/// Plain on purpose: Esc tells the modes apart by comparing `$FZF_PROMPT`.
+const NAV_PROMPT: &str = "❯ ";
 
 /// Open in a vim-style nav mode rather than fzf's filter mode: the lists here
 /// are short, so moving beats typing. j/k move, 1-9 pick that row outright,
 /// q or Esc close. i, a or / switch to filtering with the keys freed up for
 /// typing; Esc there returns to nav. Same shape as the user's tmux pickers.
-fn nav_binds(nav_prompt: &str) -> Vec<String> {
-    let to_search = format!("unbind({NAV_KEYS})+change-prompt({SEARCH_PROMPT})");
+///
+/// fzf cannot recolour a border once it is drawn, so focus moves through the
+/// text instead: search mode paints the prompt and an input label orange and
+/// dims the list label. Nav mode's plain text takes the `--color` defaults.
+fn nav_binds(label: &str) -> Vec<String> {
+    let to_search = format!(
+        "unbind({NAV_KEYS})+change-prompt({})+change-input-label( {} )+change-list-label( {} )+change-ghost()",
+        paint(ORANGE, true, "/ "),
+        paint(ORANGE, true, "search"),
+        paint(FAINT, false, label),
+    );
+    let to_nav = format!(
+        "rebind({NAV_KEYS})+change-prompt({NAV_PROMPT})+change-input-label()+change-list-label( {label} )+change-ghost(i search)"
+    );
     let mut v = vec![
         "--bind=j:down".to_string(),
         "--bind=k:up".to_string(),
@@ -216,7 +290,7 @@ fn nav_binds(nav_prompt: &str) -> Vec<String> {
         format!("--bind=/:{to_search}"),
         // Esc closes in nav mode, returns to nav mode from search mode.
         format!(
-            "--bind=esc:transform:[ \"$FZF_PROMPT\" = \"{nav_prompt}\" ] && echo abort || echo \"rebind({NAV_KEYS})+change-prompt({nav_prompt})\""
+            "--bind=esc:transform:[ \"$FZF_PROMPT\" = \"{NAV_PROMPT}\" ] && echo abort || echo \"{to_nav}\""
         ),
     ];
     for n in 1..=9 {
@@ -275,16 +349,18 @@ mod tests {
 
     #[test]
     fn nav_binds_cover_move_jump_search_and_close() {
-        let b = nav_binds("session > ").join("\n");
+        let b = nav_binds("sessions").join("\n");
         for needle in [
             "--bind=j:down",
             "--bind=k:up",
             "--bind=q:abort",
-            "--bind=i:unbind(j,k,q,i,a,/,1,2,3,4,5,6,7,8,9)+change-prompt(search > )",
+            "--bind=i:unbind(j,k,q,i,a,/,1,2,3,4,5,6,7,8,9)+change-prompt(\x1b[1;38;2;255;159;26m/ \x1b[0m)",
+            "+change-input-label( \x1b[1;38;2;255;159;26msearch\x1b[0m )",
+            "+change-list-label( \x1b[38;2;108;108;108msessions\x1b[0m )+change-ghost()",
             "--bind=/:unbind(",
             "--bind=5:pos(5)+accept",
             "--bind=9:pos(9)+accept",
-            "--bind=esc:transform:[ \"$FZF_PROMPT\" = \"session > \" ] && echo abort || echo \"rebind(j,k,q,i,a,/,1,2,3,4,5,6,7,8,9)+change-prompt(session > )\"",
+            "--bind=esc:transform:[ \"$FZF_PROMPT\" = \"❯ \" ] && echo abort || echo \"rebind(j,k,q,i,a,/,1,2,3,4,5,6,7,8,9)+change-prompt(❯ )+change-input-label()+change-list-label( sessions )+change-ghost(i search)\"",
         ] {
             assert!(b.contains(needle), "missing {needle}\n{b}");
         }
@@ -341,7 +417,10 @@ mod tests {
                 .map(|k| crate::zmx::window_name(n, k as u32))
                 .collect(),
         };
-        let lines = session_lines(&[s("main", 1, 1), s("glass", 0, 3)], "glass");
+        let lines: Vec<String> = session_lines(&[s("main", 1, 1), s("glass", 0, 3)], "glass")
+            .iter()
+            .map(|l| strip_ansi(l))
+            .collect();
         assert!(
             !lines[0].contains("w "),
             "one window: no count: {}",
@@ -352,8 +431,31 @@ mod tests {
             "several windows: a count: {}",
             lines[1]
         );
-        assert!(lines[0].starts_with("1  main"), "{}", lines[0]);
-        assert!(lines[1].starts_with("2* glass"), "{}", lines[1]);
-        assert!(lines[1].ends_with("\tglass"));
+        assert!(lines[0].starts_with("1   main"), "{}", lines[0]);
+        assert!(lines[1].starts_with("2 ● glass"), "{}", lines[1]);
+        assert!(lines[1].ends_with("~/x\tglass"));
+        // padding happens before painting, so columns still line up
+        let col = |l: &str| l.split("~/x").next().unwrap().chars().count();
+        assert_eq!(col(&lines[0]), col(&lines[1]));
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::new();
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                chars.by_ref().find(|&c| c == 'm');
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn footer_paints_keys_and_words() {
+        let f = strip_ansi(&footer("j/k move · enter switch · q back"));
+        assert_eq!(f, "j/k move  enter switch  q back");
+        assert!(footer("q back").starts_with("\x1b[1;38;2;77;150;255mq\x1b[0m"));
     }
 }
