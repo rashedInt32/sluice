@@ -453,6 +453,7 @@ mod tests {
         let s = |n: &str, c: u32, w: usize| Group {
             name: n.into(),
             created: 0,
+            pid: 0,
             clients: c,
             cwd: "~/x".into(),
             dir: "/x".into(),

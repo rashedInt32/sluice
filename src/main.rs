@@ -460,6 +460,7 @@ mod tests {
         zmx::Group {
             name: name.into(),
             created: 0,
+            pid: 0,
             clients,
             cwd: String::new(),
             dir: String::new(),

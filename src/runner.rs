@@ -582,6 +582,7 @@ mod tests {
         Session {
             name: name.into(),
             created,
+            pid: created as u32,
             clients,
             cwd: String::new(),
             dir: String::new(),

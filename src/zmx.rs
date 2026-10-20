@@ -6,7 +6,12 @@ use std::process::Command;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     pub name: String,
+    /// whole seconds, so two sessions can share it
     pub created: u64,
+    /// the pid zmx reports, the process the session started with. Pids are
+    /// handed out in increasing order, so it breaks a tie in `created` the
+    /// way the sessions were actually made.
+    pub pid: u32,
     pub clients: u32,
     /// working directory for display, `$HOME` shortened to `~`
     pub cwd: String,
@@ -14,8 +19,8 @@ pub struct Session {
     pub dir: String,
 }
 
-/// Live sessions in creation order (oldest first), name as tiebreak. That is
-/// the order the numbered jumps use, so a new session never renumbers an old one.
+/// Live sessions in creation order, oldest first. That is the order the
+/// numbered jumps use, so a new session never renumbers an old one.
 pub fn list() -> Vec<Session> {
     let out = Command::new("zmx").arg("list").output();
     let Ok(out) = out else { return Vec::new() };
@@ -24,7 +29,7 @@ pub fn list() -> Vec<Session> {
 
 pub fn parse_list(text: &str) -> Vec<Session> {
     let mut v: Vec<Session> = text.lines().filter_map(parse_line).collect();
-    v.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.name.cmp(&b.name)));
+    v.sort_by_key(|s| (s.created, s.pid));
     v
 }
 
@@ -32,6 +37,7 @@ fn parse_line(line: &str) -> Option<Session> {
     let mut s = Session {
         name: String::new(),
         created: 0,
+        pid: 0,
         clients: 0,
         cwd: String::new(),
         dir: String::new(),
@@ -47,6 +53,7 @@ fn parse_line(line: &str) -> Option<Session> {
         match k {
             "name" => s.name = v.to_string(),
             "created" => s.created = v.parse().unwrap_or(0),
+            "pid" => s.pid = v.parse().unwrap_or(0),
             "clients" => s.clients = v.parse().unwrap_or(0),
             "cwd" => {
                 s.dir = raw_path(v);
@@ -151,6 +158,8 @@ pub struct Group {
     pub name: String,
     /// creation time of its oldest window, so adding a window never renumbers it
     pub created: u64,
+    /// that window's pid, the tiebreak for `created`
+    pub pid: u32,
     /// clients across all its windows
     pub clients: u32,
     /// window 1's directory, or the oldest window's when window 1 is gone
@@ -172,6 +181,7 @@ pub fn groups(list: &[Session]) -> Vec<Group> {
                 out.push(Group {
                     name: g.to_string(),
                     created: 0,
+                    pid: 0,
                     clients: 0,
                     cwd: String::new(),
                     dir: String::new(),
@@ -183,14 +193,18 @@ pub fn groups(list: &[Session]) -> Vec<Group> {
     }
     for (g, mut ws) in out.iter_mut().zip(by_index) {
         ws.sort_by_key(|(k, _)| *k);
-        g.created = ws.iter().map(|(_, s)| s.created).min().unwrap_or(0);
+        (g.created, g.pid) = ws
+            .iter()
+            .map(|(_, s)| (s.created, s.pid))
+            .min()
+            .unwrap_or((0, 0));
         g.clients = ws.iter().map(|(_, s)| s.clients).sum();
         let first = ws[0].1;
         g.cwd = first.cwd.clone();
         g.dir = first.dir.clone();
         g.windows = ws.iter().map(|(_, s)| s.name.clone()).collect();
     }
-    out.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.name.cmp(&b.name)));
+    out.sort_by_key(|g| (g.created, g.pid));
     out
 }
 
@@ -281,6 +295,7 @@ mod tests {
         Session {
             name: name.into(),
             created,
+            pid: created as u32,
             clients,
             cwd: format!("~/{name}"),
             dir: format!("/h/{name}"),
@@ -320,6 +335,16 @@ mod tests {
         assert_eq!(g[0].clients, 1, "clients add up across windows");
         assert_eq!(g[0].dir, "/h/glass", "window 1's directory");
         assert_eq!(g[1].windows, ["eddy"]);
+    }
+
+    #[test]
+    fn sessions_made_in_the_same_second_keep_their_order() {
+        // zz was made first; a later `aa` in the same second sorts after it
+        let text = "  name=aa\tpid=501\tclients=0\tcreated=7\n  name=zz\tpid=500\tclients=0\tcreated=7\n";
+        let names: Vec<String> = parse_list(text).into_iter().map(|s| s.name).collect();
+        assert_eq!(names, ["zz", "aa"]);
+        let g = groups(&parse_list(text));
+        assert_eq!(g[0].name, "zz");
     }
 
     #[test]
