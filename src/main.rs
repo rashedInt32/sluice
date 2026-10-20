@@ -285,8 +285,9 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
     // `--session` may name the window a client is on (what ZMX_SESSION
     // holds) or a whole session; a session reaches every one of its windows.
     let mut targets = vec![session.clone()];
+    let live = zmx::list();
     if !zmx::is_window_ref(&session) {
-        if let Some(g) = zmx::list_groups().into_iter().find(|g| g.name == session) {
+        if let Some(g) = zmx::groups(&live).into_iter().find(|g| g.name == session) {
             for w in g.windows {
                 if !targets.contains(&w) {
                     targets.push(w);
@@ -299,7 +300,29 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
         eprintln!("sluice: no sluice client is showing `{session}`");
         return 1;
     }
+    if cmd == "detach" {
+        wait_detached(&targets, clients_on(&live, &targets), reached);
+    }
     0
+}
+
+fn clients_on(live: &[zmx::Session], targets: &[String]) -> usize {
+    live.iter()
+        .filter(|s| targets.contains(&s.name))
+        .map(|s| s.clients as usize)
+        .sum()
+}
+
+/// A detach lands asynchronously, in the client. Return once zmx counts
+/// `reached` fewer clients on `targets`, so whoever runs next (the picker's
+/// reload) sees the result. Bounded: a slow client only costs a second.
+fn wait_detached(targets: &[String], before: usize, reached: usize) {
+    for _ in 0..100 {
+        if clients_on(&zmx::list(), targets) + reached <= before {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
 }
 
 fn handoff_cmd(args: &[String]) -> i32 {

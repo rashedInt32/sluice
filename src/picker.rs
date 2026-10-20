@@ -142,7 +142,9 @@ pub fn focus_binds(index: Option<usize>) -> Vec<String> {
 /// whatever pane is holding it, then redraw the list in place.
 ///
 /// Both act on the hidden name in field 2. The list is reloaded from `sluice
-/// list --rows`, so the picker shows the result rather than a stale row.
+/// list --rows`, so the picker shows the result rather than a stale row. No
+/// sleep before it: `zmx kill` returns once the session is gone, and `sluice
+/// detach` once zmx has dropped the client.
 /// The kill is immediate, takes every window of the session, and there is no
 /// undo, which the header says.
 pub fn session_binds(current: &str) -> Vec<String> {
@@ -170,8 +172,8 @@ fn session_binds_with(exe: &str, current: &str) -> Vec<String> {
         false => format!("{exe} list --rows --current \"$SLUICE_CURRENT\""),
     };
     vec![
-        format!("--bind=ctrl-x:execute-silent({exe} kill {{2}})+reload(sleep 0.2; {reload})"),
-        format!("--bind=ctrl-d:execute-silent({exe} detach --session {{2}})+reload(sleep 0.2; {reload})"),
+        format!("--bind=ctrl-x:execute-silent({exe} kill {{2}})+reload({reload})"),
+        format!("--bind=ctrl-d:execute-silent({exe} detach --session {{2}})+reload({reload})"),
         format!("--bind=ctrl-l:reload({reload})"),
     ]
 }
@@ -406,12 +408,12 @@ mod tests {
             "{b}"
         );
         assert!(
-            b.contains("reload(sleep 0.2; S list --rows --current \"$SLUICE_CURRENT\")"),
+            b.contains("reload(S list --rows --current \"$SLUICE_CURRENT\")"),
             "{b}"
         );
         // with no current session the marker argument is left off entirely
         let b = session_binds_with("S", "").join("\n");
-        assert!(b.contains("reload(sleep 0.2; S list --rows)"), "{b}");
+        assert!(b.contains("reload(S list --rows)"), "{b}");
         assert!(!b.contains("--current"), "{b}");
     }
 

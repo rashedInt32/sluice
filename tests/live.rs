@@ -665,8 +665,10 @@ fn detach_command_reaches_the_client_in_front() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+    // it returns only once zmx has dropped the client: the picker's reload
+    // relies on that instead of a sleep
+    assert_eq!(clients(&name), Some(0), "detach returned before it landed");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
-    p.wait_clients(&name, Some(0), Duration::from_secs(3));
     // nobody left to detach
     let out = sluice_cmd(&["detach", "--session", &name], &xdg);
     assert_eq!(out.status.code(), Some(1));
