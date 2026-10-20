@@ -434,13 +434,13 @@ impl Runner {
                 Some(p) => self.switch_to(Choice::named(p)),
                 None => Flow::Continue,
             },
-            Action::Jump(n) => match zmx::list_groups().get(n - 1) {
-                Some(g) => {
-                    let name = g.name.clone();
-                    self.switch_to(Choice::named(name))
+            Action::Jump(n) => {
+                let live = zmx::list();
+                match zmx::groups(&live).get(n - 1) {
+                    Some(g) => self.switch_in(&live, Choice::named(g.name.clone())),
+                    None => Flow::Continue,
                 }
-                None => Flow::Continue,
-            },
+            }
             Action::NewWindow => {
                 let live = zmx::list();
                 let g = self.group();
@@ -546,7 +546,12 @@ impl Runner {
 
     /// Session switch without a picker (jump, prev, `sluice switch`).
     fn switch_to(&mut self, c: Choice) -> Flow {
-        let target = Self::resolve(&c.name, &zmx::list(), &self.last_window);
+        self.switch_in(&zmx::list(), c)
+    }
+
+    /// As `switch_to`, with a `zmx list` the caller already has.
+    fn switch_in(&mut self, live: &[Session], c: Choice) -> Flow {
+        let target = Self::resolve(&c.name, live, &self.last_window);
         if target == self.current {
             return Flow::Continue;
         }
