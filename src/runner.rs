@@ -124,7 +124,7 @@ impl Runner {
         self.scanner.reset();
         self.titles.reset();
         if let Some(c) = self.child.take() {
-            sys::hangup_and_wait(c.pid, std::time::Duration::from_millis(500));
+            sys::hangup_and_wait(c.pid, std::time::Duration::from_millis(500), self.sig_fd);
             sys::close(c.master);
         }
         let _ = sys::write_all(STDOUT, NEUTRAL);
@@ -281,7 +281,7 @@ impl Runner {
                 Some(c) => (c.pid, c.master),
                 None => return 0,
             };
-            let ready = match sys::poll_readable(&[STDIN, master, self.sig_fd]) {
+            let ready = match sys::poll_readable([STDIN, master, self.sig_fd]) {
                 Ok(m) => m,
                 Err(_) => return 1,
             };

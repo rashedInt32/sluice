@@ -173,17 +173,43 @@ pub fn wait(pid: libc::pid_t) -> i32 {
 
 /// SIGHUP then reap; a child that has not gone within `grace` gets SIGKILL,
 /// which zmx also treats as a detach (its socket closes).
-pub fn hangup_and_wait(pid: libc::pid_t, grace: std::time::Duration) -> i32 {
+///
+/// Sleeps on the signal pipe, so the child's SIGCHLD wakes it the moment it
+/// exits. Other signals read off the pipe meanwhile are put back for the
+/// event loop.
+pub fn hangup_and_wait(pid: libc::pid_t, grace: std::time::Duration, sig_fd: RawFd) -> i32 {
     kill(pid, libc::SIGHUP);
     let end = std::time::Instant::now() + grace;
-    while std::time::Instant::now() < end {
+    let mut other: Vec<libc::c_int> = Vec::new();
+    let code = loop {
         if let Some(code) = try_wait(pid) {
-            return code;
+            break Some(code);
         }
-        std::thread::sleep(std::time::Duration::from_millis(2));
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            break None;
+        }
+        let mut p = libc::pollfd {
+            fd: sig_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // Rounded up, so the last stretch is not a spin of zero timeouts.
+        let ms = left.as_micros().div_ceil(1000) as libc::c_int;
+        unsafe { libc::poll(&mut p, 1, ms) };
+        for s in drain_signals(sig_fd) {
+            if s != libc::SIGCHLD && !other.contains(&s) {
+                other.push(s);
+            }
+        }
+    };
+    for s in other {
+        on_signal(s);
     }
-    kill(pid, libc::SIGKILL);
-    wait(pid)
+    code.unwrap_or_else(|| {
+        kill(pid, libc::SIGKILL);
+        wait(pid)
+    })
 }
 
 fn exit_code(status: libc::c_int) -> i32 {
@@ -237,15 +263,12 @@ pub fn write_all(fd: RawFd, mut buf: &[u8]) -> io::Result<()> {
 
 /// Wait until any of `fds` is readable. Returns a bitmask of readable indexes.
 /// Index bit is also set on HUP/ERR so the caller's read observes the condition.
-pub fn poll_readable(fds: &[RawFd]) -> io::Result<u32> {
-    let mut pfds: Vec<libc::pollfd> = fds
-        .iter()
-        .map(|&fd| libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        })
-        .collect();
+pub fn poll_readable<const N: usize>(fds: [RawFd; N]) -> io::Result<u32> {
+    let mut pfds = fds.map(|fd| libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    });
     loop {
         let r = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, -1) };
         if r >= 0 {
@@ -327,4 +350,29 @@ pub fn drain_signals(fd: RawFd) -> Vec<libc::c_int> {
         }
     }
     seen
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[allow(clippy::zombie_processes)] // hangup_and_wait reaps it
+    fn hangup_and_wait_reaps_at_once_and_keeps_other_signals() {
+        let fd = signal_pipe().unwrap();
+        let child = std::process::Command::new("sleep")
+            .arg("10")
+            .spawn()
+            .unwrap();
+        unsafe { libc::raise(libc::SIGWINCH) };
+        let t = std::time::Instant::now();
+        let code = hangup_and_wait(child.id() as i32, std::time::Duration::from_secs(5), fd);
+        assert_eq!(code, 128 + libc::SIGHUP);
+        assert!(
+            t.elapsed() < std::time::Duration::from_millis(500),
+            "{:?}",
+            t.elapsed()
+        );
+        assert!(drain_signals(fd).contains(&libc::SIGWINCH), "put back");
+    }
 }
