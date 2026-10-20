@@ -1061,10 +1061,17 @@ fn prefix_x_kills_only_the_window_on_screen() {
     p.send(b"\x01c");
     p.wait_clients(&w2, Some(1), Duration::from_secs(5));
 
+    // a bare Enter keeps the window: the first row is "no"
     p.send(b"\x01x");
     // the row, not the box label: fzf can draw the label before the rows load
     p.expect("yes, kill", Duration::from_secs(5));
-    p.send(b"\r"); // first row is "yes"
+    p.send(b"\r");
+    p.drain(Duration::from_millis(500));
+    assert_eq!(clients(&w2), Some(1), "Enter alone killed the window");
+
+    p.send(b"\x01x");
+    p.expect("yes, kill", Duration::from_secs(5));
+    p.send(b"j\r");
     p.wait_clients(&w2, None, Duration::from_secs(8));
     p.wait_clients(&s, Some(1), Duration::from_secs(8));
     assert_eq!(pane_window(&p, "d"), s);

@@ -487,9 +487,11 @@ impl Runner {
                 // session, same as before windows existed; the picker's ctrl-x
                 // is the way to kill a session with all its windows.
                 let name = self.current.clone();
+                // "no" first, so a reflexive Enter keeps the window, as tmux's
+                // kill-window? (y/n) does.
                 let lines = vec![
-                    format!("yes, kill window `{name}`\tyes"),
                     "no\tno".to_string(),
+                    format!("yes, kill window `{name}`\tyes"),
                 ];
                 let confirmed =
                     self.with_tty(|| picker::fzf(&lines, "kill?", "", None)) == Some("yes".into());
