@@ -226,7 +226,7 @@ pub fn pick_session(groups: &[Group], current: &str, hints: &str) -> Option<Stri
         &lines,
         "sessions",
         hints,
-        Some("zmx history {2} --vt --screen"),
+        Some("zmx history {2} --vt"),
         &extra,
         &[("SLUICE_CURRENT", current)],
     )
@@ -250,7 +250,9 @@ fn fzf_with(
         cmd.arg(format!("--preview={p}"));
         // List on top at full width, the session's screen below it. Side by
         // side, the list lost its directories to the preview's half.
-        cmd.arg("--preview-window=down,50%,border-rounded");
+        // `zmx history` is the whole scrollback, oldest first: `follow`
+        // shows its end, which is the screen.
+        cmd.arg("--preview-window=down,50%,border-rounded,follow");
         cmd.arg("--bind=focus:transform-preview-label:printf ' %s ' {2}");
     }
     cmd.stdin(Stdio::piped())
