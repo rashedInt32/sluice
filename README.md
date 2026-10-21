@@ -98,6 +98,8 @@ sessionizer ~/bin/my-projects    # what bare `sluice` runs with no sessions; def
 title on                         # the window title is the session name; see below
 ```
 
+As in tmux, pressing the prefix twice sends the prefix key itself. So a prefix on a key that has a default binding (`prefix d`) takes that key's place; sluice warns at start and in `sluice keys` when that leaves an action with no key.
+
 `run` commands get the tty, so they can use fzf themselves. They print the session to attach, and optionally the directory to create it in.
 
 The project picker and the sessionizer read their directories from `~/.config/sluice/bin/project-dirs`. Edit `ROOTS` at the top of it for your own layout; reinstalling never overwrites it.

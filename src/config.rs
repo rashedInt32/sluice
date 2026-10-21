@@ -212,7 +212,19 @@ impl Config {
             cfg.binds.remove(&default_prefix);
         }
         if !bound.contains(&cfg.prefix) && !unbound.contains(&cfg.prefix) {
-            cfg.binds.insert(cfg.prefix, Action::Literal);
+            // As in tmux, prefix twice sends the prefix key, so a prefix on a
+            // key with a default binding takes that key's place. Say so when
+            // no other key does the same thing.
+            if let Some(gone) = cfg.binds.insert(cfg.prefix, Action::Literal) {
+                let elsewhere = cfg.binds.values().any(|a| *a == gone);
+                if gone != Action::Literal && !elsewhere {
+                    let k = key_name(cfg.prefix);
+                    warnings.push(format!(
+                        "prefix `{k}` replaces the default `{k}` binding ({}); bind that to another key",
+                        describe_action(&gone)
+                    ));
+                }
+            }
         }
         cfg.sessionizer = sessionizer.or_else(|| match cfg.binds.get(&Key::Char('s')) {
             Some(Action::Run(cmd)) => Some(cmd.clone()),
@@ -352,6 +364,20 @@ mod tests {
             lit("bind C-b literal\nprefix C-b\nprefix C-c\n"),
             vec![Key::Ctrl('b'), Key::Ctrl('c')]
         );
+    }
+
+    #[test]
+    fn a_prefix_on_a_bound_key_warns_when_its_action_is_lost() {
+        let (c, w) = Config::parse("prefix d\n");
+        assert_eq!(c.binds.get(&Key::Char('d')), Some(&Action::Literal));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("prefix `d`") && w[0].contains("detach"), "{w:?}");
+        // bound elsewhere, nothing is lost
+        let (_, w) = Config::parse("bind x detach\nprefix d\n");
+        assert!(w.is_empty(), "{w:?}");
+        // a key with no default binding
+        let (_, w) = Config::parse("prefix C-b\n");
+        assert!(w.is_empty(), "{w:?}");
     }
 
     #[test]
