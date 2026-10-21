@@ -1423,6 +1423,10 @@ fn a_new_window_zmx_refuses_says_so_and_goes_back() {
     p.expect("$", Duration::from_secs(5));
     p.send(b"\x01c");
     p.expect("zmx did not open", Duration::from_secs(5));
+    // it waits for the key: not for the dead child's SIGCHLD, nor a resize
+    unsafe { libc::kill(p.pid, libc::SIGWINCH) };
+    std::thread::sleep(Duration::from_millis(1000));
+    assert_eq!(clients(&name), Some(0), "went back without a key");
     p.send(b"x");
     p.wait_clients(&name, Some(1), Duration::from_secs(5));
     // waiting for that key, sluice still ends on SIGTERM
@@ -1542,6 +1546,23 @@ fn the_startup_sessionizer_runs_its_command() {
     p.drain_now();
     p.send(b"q");
     p.expect("sessionizer-ran", Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn alt_close_bracket_typed_does_not_swallow_the_prefix_after_it() {
+    if !zmx_present() {
+        return;
+    }
+    let mut env = Env::new("ab", "");
+    let a = env.session("ab");
+    let p = env.spawn(&[&a]);
+    p.expect("$", Duration::from_secs(5));
+    // legacy alt+] is ESC ], the start of an OSC: held, then let go once
+    // no rest follows
+    p.send(b"\x1b]");
+    std::thread::sleep(Duration::from_millis(200));
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }

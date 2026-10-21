@@ -111,7 +111,31 @@ impl Scanner {
     /// While it says yes the prefix goes through as typed: a program in the
     /// session has asked for it. Asking only then keeps the check off every
     /// other keystroke.
-    pub fn feed_with(&mut self, buf: &[u8], mut handed_off: impl FnMut() -> bool) -> Vec<Event> {
+    pub fn feed_with(&mut self, buf: &[u8], handed_off: impl FnMut() -> bool) -> Vec<Event> {
+        self.scan(buf, handed_off, false)
+    }
+
+    /// Whether a sequence's start is held for the next read.
+    pub fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
+    /// No more input came after a held start: it was typed, not cut off.
+    /// alt+] arrives as `ESC ]`, alt+[ as `ESC [`, and held for good they
+    /// would swallow the keys typed after them. A terminal writes a whole
+    /// sequence at once, and a read boundary inside it is followed at once
+    /// by the rest, so the caller calls this after a short quiet spell.
+    pub fn settle(&mut self, handed_off: impl FnMut() -> bool) -> Vec<Event> {
+        let held = std::mem::take(&mut self.pending);
+        self.scan(&held, handed_off, true)
+    }
+
+    fn scan(
+        &mut self,
+        buf: &[u8],
+        mut handed_off: impl FnMut() -> bool,
+        settled: bool,
+    ) -> Vec<Event> {
         let joined;
         let data: &[u8] = if self.pending.is_empty() {
             buf
@@ -140,8 +164,10 @@ impl Scanner {
                     self.in_paste = false;
                     continue;
                 }
-                // Hold back a tail that could be the start of the end marker.
+                // Hold back a tail that could be the start of the end marker,
+                // unless the input has gone quiet: then it is pasted text.
                 let keep = (1..PASTE_END.len())
+                    .filter(|_| !settled)
                     .rev()
                     .find(|&k| data[i..].ends_with(&PASTE_END[..k]))
                     .unwrap_or(0);
@@ -160,7 +186,7 @@ impl Scanner {
             match scan_one(&data[i..]) {
                 Scan::Incomplete => {
                     let rest = &data[i..];
-                    if rest.len() <= MAX_PENDING {
+                    if !settled && rest.len() <= MAX_PENDING {
                         flush(&mut out, run, i);
                         self.pending = rest.to_vec();
                         return out;
@@ -279,12 +305,6 @@ fn scan_one(buf: &[u8]) -> Scan {
             exact: true,
             len: 1,
         };
-    }
-    // Likewise ESC plus `[`, `O` or `]` and nothing more is alt+[ / alt+O /
-    // alt+], typed: held as the start of a sequence, it would swallow the
-    // keys typed after it, the prefix included.
-    if buf.len() == 2 && matches!(buf[1], b'[' | b'O' | b']') {
-        return Scan::Other(2);
     }
     match buf[1] {
         b'[' => match csi_len(buf) {
@@ -566,21 +586,38 @@ mod tests {
 
     #[test]
     fn alt_o_alt_bracket_and_8_bit_bytes_are_not_held() {
-        // alt+O, alt+[ and alt+] typed: sent at once, and the prefix typed
-        // next is the prefix, not the end of a sequence
-        for alt in [&b"\x1bO"[..], b"\x1b[", b"\x1b]"] {
+        // alt+O, alt+[ and alt+] typed: held as a possible sequence, then
+        // let go once input goes quiet, and the prefix typed next is the
+        // prefix, not the end of a sequence
+        for alt in [&b"\x1bO"[..], b"\x1b[", b"\x1b]", b"\x1bO5"] {
             let mut s = Scanner::new(Key::Ctrl('a'));
-            assert_eq!(s.feed(alt), vec![Event::Bytes(alt.to_vec())]);
+            assert_eq!(s.feed(alt), vec![], "{alt:?}");
+            assert!(s.has_pending());
+            assert_eq!(s.settle(|| false), vec![Event::Bytes(alt.to_vec())]);
             let ev = s.feed(b"\x01d");
             assert!(matches!(ev[..], [Event::Chord { key: Key::Char('d'), .. }]), "{alt:?}");
         }
-        // with the same keys arriving one read each, alt+[ then `200~`
-        // typed is text, not a paste that never ends
+        // alt+[ then `200~` typed, a key per read, is text: no paste that
+        // never ends
         let mut s = Scanner::new(Key::Ctrl('a'));
         for k in [&b"\x1b["[..], b"2", b"0", b"0", b"~", b"x"] {
             s.feed(k);
+            s.settle(|| false);
         }
         assert!(matches!(s.feed(b"\x01d")[..], [Event::Chord { key: Key::Char('d'), .. }]));
+        // but a terminal's sequence cut by a read is whole again: a kitty
+        // key, a mouse report, a paste start
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"\x01\x1b[");
+        assert_eq!(chord(&s.feed(b"100u")[0]), Some(Key::Char('d')));
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"ls\x1b[");
+        let ev = s.feed(b"200~a\x01d\x1b[201~");
+        assert!(ev.iter().all(|e| matches!(e, Event::Bytes(_))), "{ev:?}");
+        // a paste end marker held when input goes quiet is pasted text
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"\x1b[200~ab\x1b[20");
+        assert_eq!(s.settle(|| false), vec![Event::Bytes(b"\x1b[20".to_vec())]);
         // SS3 with a modifier passes whole while armed
         let mut s = Scanner::new(Key::Ctrl('a'));
         s.feed(b"\x01");
@@ -656,9 +693,7 @@ mod tests {
         let mut whole = Vec::new();
         flat(Scanner::new(Key::Ctrl('a')).feed(input), &mut whole);
         for k in 1..input.len() {
-            // ESC, or ESC plus `[` / `O` / `]`, ending a read is a key by
-            // design, not a sequence's start.
-            if input[k - 1] == 0x1b || (k >= 2 && input[k - 2] == 0x1b) {
+            if input[k - 1] == 0x1b {
                 continue;
             }
             let mut s = Scanner::new(Key::Ctrl('a'));

@@ -20,6 +20,11 @@ use std::collections::HashMap;
 
 const BUF: usize = 64 * 1024;
 
+/// How long a held sequence start waits for its rest before it counts as
+/// typed. The rest of a sequence a read cut follows within microseconds;
+/// the next typed key takes tens of milliseconds.
+const SETTLE_MS: i32 = 50;
+
 pub struct Runner {
     cfg: Config,
     raw: RawMode,
@@ -201,31 +206,42 @@ impl Runner {
     }
 
     /// Wait for a key, still heeding signals: a hangup or SIGTERM ends
-    /// sluice, and anything else (a `sluice switch`) ends the wait and is
-    /// handled once a window is on screen again.
+    /// sluice, and a `sluice switch` or `detach` (SIGUSR1) ends the wait and
+    /// is handled once a window is on screen again. Others (the dead
+    /// child's SIGCHLD, a resize) keep for later and the wait goes on.
     fn wait_for_key(&mut self) -> Flow {
-        loop {
-            let ready = match sys::poll_readable([STDIN, self.sig_fd]) {
+        let mut kept: Vec<libc::c_int> = Vec::new();
+        let flow = loop {
+            let ready = match sys::poll_readable([STDIN, self.sig_fd], -1) {
                 Ok(m) => m,
-                Err(_) => return Flow::Exit(1),
+                Err(_) => break Flow::Exit(1),
             };
             if ready & 0b10 != 0 {
                 let sigs = sys::drain_signals(self.sig_fd);
                 let quit = [libc::SIGHUP, libc::SIGTERM, libc::SIGINT, libc::SIGQUIT];
                 if sigs.iter().any(|s| quit.contains(s)) {
-                    return Flow::Exit(0);
+                    break Flow::Exit(0);
                 }
-                sys::repost_signals(&sigs);
-                return Flow::Continue;
+                for s in sigs {
+                    if !kept.contains(&s) {
+                        kept.push(s);
+                    }
+                }
+                if kept.contains(&libc::SIGUSR1) {
+                    break Flow::Continue;
+                }
+                continue;
             }
             if ready & 0b01 != 0 {
                 let mut key = [0u8; 64];
-                return match sys::read(STDIN, &mut key) {
+                break match sys::read(STDIN, &mut key) {
                     Ok(0) | Err(_) => Flow::Exit(0),
                     Ok(_) => Flow::Continue,
                 };
             }
-        }
+        };
+        sys::repost_signals(&kept);
+        flow
     }
 
     /// Drop what we remembered about a window that no longer exists.
@@ -339,10 +355,20 @@ impl Runner {
                 Some(c) => (c.pid, c.master),
                 None => return 0,
             };
-            let ready = match sys::poll_readable([STDIN, master, self.sig_fd]) {
+            let timeout = match self.scanner.has_pending() {
+                true => SETTLE_MS,
+                false => -1,
+            };
+            let ready = match sys::poll_readable([STDIN, master, self.sig_fd], timeout) {
                 Ok(m) => m,
                 Err(_) => return 1,
             };
+            if ready == 0 {
+                if let Flow::Exit(code) = self.on_settle() {
+                    return code;
+                }
+                continue;
+            }
 
             if ready & 0b100 != 0 {
                 if let Flow::Exit(code) = self.on_signals() {
@@ -401,6 +427,17 @@ impl Runner {
         let events = self
             .scanner
             .feed_with(chunk, || handoff::active(current));
+        self.on_events(events)
+    }
+
+    /// Input went quiet with a sequence's start held: it was typed.
+    fn on_settle(&mut self) -> Flow {
+        let current = &self.current;
+        let events = self.scanner.settle(|| handoff::active(current));
+        self.on_events(events)
+    }
+
+    fn on_events(&mut self, events: Vec<Event>) -> Flow {
         for ev in events {
             match ev {
                 Event::Bytes(b) => {

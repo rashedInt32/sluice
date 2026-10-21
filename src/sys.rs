@@ -264,14 +264,15 @@ pub fn write_all(fd: RawFd, mut buf: &[u8]) -> io::Result<()> {
 
 /// Wait until any of `fds` is readable. Returns a bitmask of readable indexes.
 /// Index bit is also set on HUP/ERR so the caller's read observes the condition.
-pub fn poll_readable<const N: usize>(fds: [RawFd; N]) -> io::Result<u32> {
+/// `timeout_ms` < 0 waits for ever; a timeout returns an empty mask.
+pub fn poll_readable<const N: usize>(fds: [RawFd; N], timeout_ms: i32) -> io::Result<u32> {
     let mut pfds = fds.map(|fd| libc::pollfd {
         fd,
         events: libc::POLLIN,
         revents: 0,
     });
     loop {
-        let r = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, -1) };
+        let r = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
         if r >= 0 {
             break;
         }
