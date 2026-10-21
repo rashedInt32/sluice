@@ -73,7 +73,13 @@ pub struct Scanner {
     waiting: Option<Vec<u8>>,
     /// Tail of the last chunk that ended mid-sequence.
     pending: Vec<u8>,
+    /// Inside a bracketed paste: everything up to its end marker is text for
+    /// the program, so a prefix byte in it is not the prefix.
+    in_paste: bool,
 }
+
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
 
 impl Scanner {
     pub fn new(prefix: Key) -> Scanner {
@@ -92,6 +98,7 @@ impl Scanner {
             plain,
             waiting: None,
             pending: Vec::new(),
+            in_paste: false,
         }
     }
 
@@ -127,6 +134,22 @@ impl Scanner {
         };
         let mut i = 0;
         while i < data.len() {
+            if self.in_paste {
+                if let Some(j) = find(&data[i..], PASTE_END) {
+                    i += j + PASTE_END.len();
+                    self.in_paste = false;
+                    continue;
+                }
+                // Hold back a tail that could be the start of the end marker.
+                let keep = (1..PASTE_END.len())
+                    .rev()
+                    .find(|&k| data[i..].ends_with(&PASTE_END[..k]))
+                    .unwrap_or(0);
+                let end = data.len() - keep;
+                flush(&mut out, run, end);
+                self.pending = data[end..].to_vec();
+                return out;
+            }
             if self.waiting.is_none() && plain(data[i]) {
                 i += 1;
                 while i < data.len() && plain(data[i]) {
@@ -154,7 +177,15 @@ impl Scanner {
                     }
                     i += len;
                 }
-                Scan::Other(len) => i += len,
+                Scan::Other(len) => {
+                    if &data[i..i + len] == PASTE_START {
+                        // A paste cancels an armed prefix: its text is not
+                        // a chord key.
+                        self.in_paste = true;
+                        self.waiting = None;
+                    }
+                    i += len;
+                }
                 Scan::Key { key, exact, len } => {
                     if let Some(raw_prefix) = self.waiting.take() {
                         flush(&mut out, run, i);
@@ -183,8 +214,22 @@ impl Scanner {
     pub fn reset(&mut self) {
         self.waiting = None;
         self.pending.clear();
+        self.in_paste = false;
     }
 
+}
+
+/// Where `needle` first starts in `hay`.
+fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    let mut at = 0;
+    while let Some(off) = hay[at..].iter().position(|&b| b == needle[0]) {
+        let j = at + off;
+        if hay[j..].starts_with(needle) {
+            return Some(j);
+        }
+        at = j + 1;
+    }
+    None
 }
 
 /// Decode the next item at the head of `buf`.
@@ -400,6 +445,33 @@ mod tests {
     }
 
     #[test]
+    fn a_prefix_inside_a_bracketed_paste_is_text() {
+        let bytes = |ev: Vec<Event>| -> Vec<u8> {
+            ev.into_iter()
+                .flat_map(|e| match e {
+                    Event::Bytes(b) => b,
+                    e => panic!("not text: {e:?}"),
+                })
+                .collect()
+        };
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        let paste = b"\x1b[200~a\x01bc\x1b[201~";
+        assert_eq!(bytes(s.feed(paste)), paste.to_vec());
+        // a printable prefix and a code fence, the end marker split
+        let mut s = Scanner::new(Key::Char('`'));
+        let mut got = bytes(s.feed(b"\x1b[200~```rust\nfn x(){}\n```\n\x1b[20"));
+        got.extend(bytes(s.feed(b"1~")));
+        assert_eq!(got, b"\x1b[200~```rust\nfn x(){}\n```\n\x1b[201~".to_vec());
+        // after the paste the prefix is the prefix again
+        assert!(matches!(s.feed(b"`d")[..], [Event::Chord { key: Key::Char('d'), .. }]));
+        // a paste cancels an armed prefix
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"\x01");
+        assert_eq!(bytes(s.feed(b"\x1b[200~xy\x1b[201~")), b"\x1b[200~xy\x1b[201~".to_vec());
+        assert!(!s.is_waiting());
+    }
+
+    #[test]
     fn a_printable_prefix_is_found_inside_a_run() {
         let mut s = Scanner::new(Key::Char('`'));
         let ev = s.feed(b"echo hi\n`dls\n");
@@ -421,7 +493,7 @@ mod tests {
             }
         }
         let input: &[u8] =
-            b"ab\tc\x01d\x1b[97;5u\x1b[97;5:3uq\x1b[Ax\xc3\xa9\x01\x1b[O\x1b[<0;9;3Mf\r\x7f";
+            b"ab\tc\x01d\x1b[97;5u\x1b[97;5:3uq\x1b[Ax\xc3\xa9\x01\x1b[O\x1b[<0;9;3Mf\r\x7f\x1b[200~p\x01q\x1b[201~\x01z";
         let mut whole = Vec::new();
         flat(Scanner::new(Key::Ctrl('a')).feed(input), &mut whole);
         for k in 1..input.len() {
