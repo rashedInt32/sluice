@@ -372,6 +372,133 @@ pub fn drain_signals(fd: RawFd) -> Vec<libc::c_int> {
     seen
 }
 
+// ---------------------------------------------------------------- processes
+
+/// The foreground process group of the terminal `pid` is on: the job a shell
+/// is running, or the shell itself at its prompt. A group's id is its first
+/// process's pid. None when `pid` is gone or has no terminal.
+#[cfg(target_os = "macos")]
+pub fn tty_foreground(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    (n == size && info.e_tpgid > 0).then_some(info.e_tpgid)
+}
+
+/// As above, from `/proc/<pid>/stat`: the eighth field, counted after the
+/// command name, which may itself hold spaces and parentheses.
+#[cfg(not(target_os = "macos"))]
+pub fn tty_foreground(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = &stat[stat.rfind(')')? + 1..];
+    // state ppid pgrp session tty_nr tpgid
+    let tpgid: i64 = rest.split_whitespace().nth(5)?.parse().ok()?;
+    (tpgid > 0).then_some(tpgid as u32)
+}
+
+/// The arguments `pid` was started with, argv[0] first. None when it is gone
+/// or not ours to read.
+#[cfg(target_os = "macos")]
+pub fn proc_args(pid: u32) -> Option<Vec<String>> {
+    let mut argmax: libc::c_int = 0;
+    let mut size = std::mem::size_of::<libc::c_int>();
+    let mut mib = [libc::CTL_KERN, libc::KERN_ARGMAX];
+    let r = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            2,
+            &mut argmax as *mut _ as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if r != 0 || argmax <= 0 {
+        return None;
+    }
+    let mut buf = vec![0u8; argmax as usize];
+    let mut size = buf.len();
+    let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
+    let r = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if r != 0 {
+        return None;
+    }
+    parse_procargs2(&buf[..size.min(buf.len())])
+}
+
+/// KERN_PROCARGS2: argc as a native int, the executable's path, NUL padding,
+/// then argc NUL-terminated arguments, then the environment.
+#[cfg(any(target_os = "macos", test))]
+fn parse_procargs2(buf: &[u8]) -> Option<Vec<String>> {
+    let argc = i32::from_ne_bytes(buf.get(..4)?.try_into().ok()?);
+    if argc <= 0 {
+        return None;
+    }
+    let mut rest = &buf[4..];
+    let path_end = rest.iter().position(|&b| b == 0)?;
+    rest = &rest[path_end..];
+    let start = rest.iter().position(|&b| b != 0)?;
+    rest = &rest[start..];
+    let args: Vec<String> = rest
+        .split(|&b| b == 0)
+        .take(argc as usize)
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect();
+    (args.len() == argc as usize).then_some(args)
+}
+
+/// The name of `pid`'s executable. Readable where its arguments are not: a
+/// process of another user, `sudo vim` say.
+#[cfg(target_os = "macos")]
+pub fn proc_name(pid: u32) -> Option<String> {
+    let mut buf = [0u8; 256];
+    let n = unsafe {
+        libc::proc_name(
+            pid as libc::c_int,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            buf.len() as u32,
+        )
+    };
+    (n > 0).then(|| String::from_utf8_lossy(&buf[..n as usize]).into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn proc_name(pid: u32) -> Option<String> {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?;
+    Some(comm.trim_end_matches('\n').to_string()).filter(|c| !c.is_empty())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn proc_args(pid: u32) -> Option<Vec<String>> {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let raw = raw.strip_suffix(&[0]).unwrap_or(&raw);
+    if raw.is_empty() {
+        return None;
+    }
+    Some(
+        raw.split(|&b| b == 0)
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -394,5 +521,32 @@ mod tests {
             t.elapsed()
         );
         assert!(drain_signals(fd).contains(&libc::SIGWINCH), "put back");
+    }
+
+    #[test]
+    fn procargs2_skips_the_path_and_its_padding() {
+        let mut b = 3i32.to_ne_bytes().to_vec();
+        b.extend_from_slice(b"/opt/bin/nvim\0\0\0\0nvim\0-p\0a b\0HOME=/x\0");
+        assert_eq!(
+            parse_procargs2(&b),
+            Some(vec!["nvim".into(), "-p".into(), "a b".into()])
+        );
+        // cut short: fewer arguments than argc says
+        let mut b = 3i32.to_ne_bytes().to_vec();
+        b.extend_from_slice(b"/bin/x\0x\0");
+        assert_eq!(parse_procargs2(&b), None);
+        assert_eq!(parse_procargs2(&[1, 0]), None);
+    }
+
+    #[test]
+    fn this_process_is_readable() {
+        let me = std::process::id();
+        let args = proc_args(me).expect("own arguments");
+        assert!(!args.is_empty());
+        assert!(proc_name(me).is_some_and(|n| !n.is_empty()));
+        // a pid that cannot exist
+        assert_eq!(tty_foreground(u32::MAX / 2), None);
+        assert_eq!(proc_args(u32::MAX / 2), None);
+        assert_eq!(proc_name(u32::MAX / 2), None);
     }
 }

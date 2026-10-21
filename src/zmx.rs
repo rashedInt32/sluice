@@ -245,11 +245,6 @@ pub fn groups(list: &[Session]) -> Vec<Group> {
     out
 }
 
-/// Live sessions, grouped. One `zmx list`.
-pub fn list_groups() -> Vec<Group> {
-    groups(&list())
-}
-
 /// Kill every window of a session, or one window when named explicitly.
 pub fn kill_target(name: &str, live: &[Session]) -> usize {
     let targets: Vec<String> = if is_window_ref(name) {

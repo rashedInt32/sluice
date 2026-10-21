@@ -4,6 +4,7 @@ mod handoff;
 mod kbd;
 mod keys;
 mod picker;
+mod procs;
 mod runner;
 mod sys;
 mod title;
@@ -23,6 +24,9 @@ usage:
   sluice list [--rows [--current S]]  numbered sessions, in jump order;
                                       --rows prints them as the picker draws them
   sluice list --windows               every window, one zmx session per line
+  sluice list --rows --windows --current S
+                                      the windows of S's session as the window
+                                      picker draws them
   sluice keys                         show the active prefix bindings
   sluice kill <name>                  kill a session with all its windows, or one
                                       window named as <session>+<n>
@@ -241,6 +245,19 @@ fn list_cmd(args: &[String]) -> i32 {
         }
     }
     let live = zmx::list();
+    if windows && rows {
+        // the window picker's reload: the windows of --current's session
+        if current.is_empty() {
+            eprintln!("sluice: list: --rows --windows needs --current");
+            return 2;
+        }
+        let ws = picker::session_windows(&live, &current);
+        let running = procs::of_all(ws.iter().copied());
+        for line in picker::window_lines(&ws, &current, &running, picker::now_ms()) {
+            println!("{line}");
+        }
+        return 0;
+    }
     if windows {
         // every zmx session, one per window: name, clients, created, cwd
         for s in &live {
@@ -250,7 +267,7 @@ fn list_cmd(args: &[String]) -> i32 {
     }
     let groups = zmx::groups(&live);
     if rows {
-        for line in picker::session_lines(&groups, &current) {
+        for line in picker::session_lines(&groups, &current, &procs::of_all(&live)) {
             println!("{line}");
         }
     } else {
@@ -626,10 +643,9 @@ fn parse_attach_args(args: &[String]) -> Result<Option<(String, Option<String>)>
 /// No name given: fzf over live sessions; with none (or on cancel) fall through
 /// to the sessionizer so a fresh terminal can start a project directly.
 fn pick_or_sessionize(cfg: &Config, live: &[zmx::Session]) -> Option<picker::Choice> {
-    let sessions = zmx::groups(live);
-    if !sessions.is_empty() {
+    if !live.is_empty() {
         let header = "j/k move · 1-9 jump · enter attach · ctrl-x kill · ctrl-d detach · i search · q new project";
-        if let Some(name) = picker::pick_session(&sessions, "", header) {
+        if let Some(name) = picker::pick_session(live, "", header) {
             return Some(picker::Choice::named(name));
         }
     }

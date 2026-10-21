@@ -15,7 +15,7 @@ What this gives you compared to tmux:
 - the prefix keys, working even while nvim or an agent has the pane
 - a clean keyboard in every session, even after one of them turned on the kitty keyboard protocol
 
-Windows work like tmux's, without a tab bar: `prefix+c` opens one, `prefix+n` and `prefix+p` move between them, and only the one you are on is drawn. A window fills the whole pane, so switching is the same raw-byte handoff as switching session and nothing is lost on the way.
+Windows work like tmux's, without a tab bar: `prefix+c` opens one, `prefix+n` and `prefix+p` move between them, `prefix+w` lists them with what each one runs, and only the one you are on is drawn. A window fills the whole pane, so switching is the same raw-byte handoff as switching session and nothing is lost on the way.
 
 What it does not do, by design: splits or a status line inside the terminal. Those need a screen model again. Use your terminal's splits, and put the session name in your prompt (`$ZMX_SESSION`).
 
@@ -51,6 +51,7 @@ Default keys, prefix `C-a`:
 | `u` | every running Claude agent on the machine, and the session it is in |
 | `c` | new window in this session, in the same directory |
 | `n` / `p` | next / previous window of this session, wrapping |
+| `w` | pick a window of this session: each row shows what it runs, 1-9 jump, Enter switch, ctrl-x kill that window, q or Esc back; preview of each screen |
 | `1`..`9` | session by number, creation order |
 | `0` | previous session |
 | `d` | detach, session keeps running |
@@ -132,7 +133,8 @@ makes `prefix+y` both "launch" and "go back".
 
 A session is a group of zmx shells, one per window. Window 1 keeps the bare session name, so every session from before windows existed is just a one-window session. Window k is `<session>+<k>`.
 
-- The session picker lists sessions, not windows, with a count when there are several.
+- The session picker lists sessions, not windows, with a count when there are several, and what each window runs, in order: `zsh · nvim · claude✻`.
+- `prefix+w` lists the windows of the session you are in, numbered in the order `prefix+n` walks them, with each one's command and screen. `prefix w 3` is the third window in two keys. That is its place in the list, not the `+3` in its name: after a kill the names leave gaps and the rows do not. A Claude agent shows its state and how long it has had it: `✻ waiting 2m`.
 - Going back to a session lands on the window you last had open there.
 - `exit` in a window, or `prefix+x`, moves to a neighbouring window of the same session before falling back to another session.
 - `prefix+0` still means the previous *session*; moving between windows does not change it.
@@ -141,9 +143,12 @@ A session is a group of zmx shells, one per window. Window 1 keeps the bare sess
 ```sh
 sluice list              # sessions, windows folded in
 sluice list --windows    # every window
+sluice list --rows --windows --current glass   # glass's windows, as prefix+w draws them
 sluice switch glass+2    # one window explicitly; `glass+1` is window 1
 sluice kill glass        # a session and all its windows
 ```
+
+What a window runs is the foreground program of its terminal: the shell at its prompt, or the job it started. sluice reads it from the kernel when a picker opens, which takes microseconds and starts no process. A program inside another one, an agent in an nvim terminal say, shows as the outer one. A Claude agent's state comes from `~/.claude/sessions/<pid>.json`, the file `prefix+u` reads too.
 
 ## Sharing the prefix with a program
 

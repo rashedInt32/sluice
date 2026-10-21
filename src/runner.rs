@@ -258,7 +258,25 @@ impl Runner {
         }
     }
 
+    /// Forget every window `live` no longer has. A picker can kill windows
+    /// other than the one on screen, and a name comes back: prefix+c reuses
+    /// the highest number, and a dead window's kitty flags must not reach
+    /// the fresh shell that takes its name.
+    fn prune(&mut self, live: &[Session]) {
+        Self::prune_maps(&mut self.kbd_saved, &mut self.last_window, live);
+    }
+
     // ------------------------------------------------------------ pure helpers
+
+    fn prune_maps(
+        kbd_saved: &mut HashMap<String, KittyState>,
+        last_window: &mut HashMap<String, String>,
+        live: &[Session],
+    ) {
+        let alive = |w: &str| live.iter().any(|s| s.name == w);
+        kbd_saved.retain(|w, _| alive(w));
+        last_window.retain(|_, w| alive(w));
+    }
 
     /// Turn a target into the window to attach.
     ///
@@ -585,6 +603,9 @@ impl Runner {
                     .find(|s| s.name == self.current)
                     .map(|s| s.dir.clone())
                     .filter(|d| !d.is_empty());
+                // The name may be one a killed window had; its flags are not
+                // the new shell's.
+                self.kbd_saved.remove(&name);
                 self.switch_window(&name, dir.as_deref())
             }
             Action::NextWindow | Action::PrevWindow => {
@@ -597,14 +618,22 @@ impl Runner {
             Action::Pick => {
                 let current = self.current.clone();
                 let choice = self.with_tty(|| {
-                    let groups = zmx::list_groups();
-                    if groups.is_empty() {
+                    let live = zmx::list();
+                    if live.is_empty() {
                         return None;
                     }
                     let header = "j/k move · 1-9 jump · enter switch · ctrl-x kill · ctrl-d detach · i search · q back";
-                    picker::pick_session(&groups, &current, header).map(Choice::named)
+                    picker::pick_session(&live, &current, header).map(Choice::named)
                 });
                 self.finish_switch(choice)
+            }
+            Action::PickWindow => {
+                let current = self.current.clone();
+                let pick = self.with_tty(|| {
+                    let header = "j/k move · 1-9 jump · enter switch · ctrl-x kill · i search · q back";
+                    picker::pick_window(&zmx::list(), &current, header)
+                });
+                self.finish_window(pick)
             }
             Action::Run(cmd) => {
                 let choice = self.with_tty(|| picker::run_script(&cmd));
@@ -663,6 +692,7 @@ impl Runner {
     /// window.
     fn finish_switch(&mut self, choice: Option<Choice>) -> Flow {
         let live = zmx::list();
+        self.prune(&live);
         if let Some(c) = choice {
             let name = zmx::typed_name(&c.name, &live);
             let target = Self::resolve(&name, &live, &self.last_window);
@@ -680,6 +710,26 @@ impl Runner {
         }
         self.forget(&cur);
         self.land_after_loss(&live, 0)
+    }
+
+    /// After `with_tty` for the window picker: attach to the window picked,
+    /// as `<session>+<k>`, without touching `previous`, as prefix+n does.
+    /// A window killed while the picker was open is not attached, which
+    /// would have zmx make it anew, empty; nor is one of another session,
+    /// which only a reload racing a new session could show.
+    fn finish_window(&mut self, pick: Option<String>) -> Flow {
+        if let Some(w) = pick {
+            let (g, k) = zmx::window_of(&w);
+            let name = zmx::window_name(g, k);
+            let live = zmx::list();
+            self.prune(&live);
+            let ours = g == zmx::window_of(&self.current).0;
+            if ours && name != self.current && live.iter().any(|s| s.name == name) {
+                self.current = name.clone();
+                return self.attach_or_exit(&name, None, None);
+            }
+        }
+        self.finish_switch(None)
     }
 
     /// Session switch without a picker (jump, prev, `sluice switch`).
@@ -883,6 +933,25 @@ mod tests {
             None,
             "one window: nowhere to go"
         );
+    }
+
+    #[test]
+    fn pruning_forgets_only_windows_that_are_gone() {
+        let live = [sess("g", 1, 1), sess("g+2", 2, 0), sess("h", 3, 0)];
+        let mut kbd: HashMap<String, KittyState> = ["g", "g+2", "g+3", "x"]
+            .iter()
+            .map(|w| (w.to_string(), KittyState::default()))
+            .collect();
+        let mut last: HashMap<String, String> = [("g", "g+2"), ("h", "h+4"), ("x", "x")]
+            .iter()
+            .map(|(a, b)| (a.to_string(), b.to_string()))
+            .collect();
+        Runner::prune_maps(&mut kbd, &mut last, &live);
+        let mut k: Vec<&str> = kbd.keys().map(String::as_str).collect();
+        k.sort();
+        assert_eq!(k, ["g", "g+2"]);
+        assert_eq!(last.len(), 1);
+        assert_eq!(last["g"], "g+2");
     }
 
     #[test]

@@ -32,6 +32,8 @@ pub enum Action {
     NextWindow,
     /// previous window of this session, wrapping
     PrevWindow,
+    /// fzf over this session's windows, with what each one runs
+    PickWindow,
     /// show bindings
     Help,
     /// run a shell command that prints `name[<TAB>dir]`; attach to that session
@@ -101,6 +103,8 @@ impl Config {
         binds.insert(Key::Char('c'), Action::NewWindow);
         binds.insert(Key::Char('n'), Action::NextWindow);
         binds.insert(Key::Char('p'), Action::PrevWindow);
+        // tmux's choose-window
+        binds.insert(Key::Char('w'), Action::PickWindow);
         binds.insert(Key::Char('?'), Action::Help);
         binds.insert(Key::Ctrl('a'), Action::Literal);
         Config {
@@ -266,6 +270,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "new-window" => Some(Action::NewWindow),
         "next-window" => Some(Action::NextWindow),
         "prev-window" => Some(Action::PrevWindow),
+        "pick-window" => Some(Action::PickWindow),
         "help" => Some(Action::Help),
         "run" => Some(Action::Run(arg.to_string())),
         _ => None,
@@ -295,6 +300,7 @@ fn describe_action(a: &Action) -> String {
         Action::NewWindow => "new window".into(),
         Action::NextWindow => "next window".into(),
         Action::PrevWindow => "previous window".into(),
+        Action::PickWindow => "pick a window of this session".into(),
         Action::Help => "this list".into(),
         Action::Run(cmd) => format!("run {}", tilde(cmd)),
     }
@@ -315,6 +321,7 @@ mod tests {
         assert_eq!(c.binds[&Key::Char('c')], Action::NewWindow);
         assert_eq!(c.binds[&Key::Char('n')], Action::NextWindow);
         assert_eq!(c.binds[&Key::Char('p')], Action::PrevWindow);
+        assert_eq!(c.binds[&Key::Char('w')], Action::PickWindow);
     }
 
     #[test]

@@ -1730,3 +1730,73 @@ fn a_cut_sequence_is_not_settled_while_its_rest_waits_unread() {
     assert_eq!(cut_prefix_detaches("cuq", false), Some(0), "quiet");
     assert_eq!(cut_prefix_detaches("cub", true), Some(0), "output blocked");
 }
+
+#[test]
+fn the_window_picker_shows_what_runs_jumps_and_kills_one_window() {
+    if !zmx_present() || !fzf_present() {
+        return;
+    }
+    let s = uniq("wpick");
+    let w2 = format!("{s}+2");
+    let w3 = format!("{s}+3");
+    let p = spawn(&[&s], &[]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"\x01c");
+    p.wait_clients(&w2, Some(1), Duration::from_secs(5));
+    p.send(b"\x01c");
+    p.wait_clients(&w3, Some(1), Duration::from_secs(5));
+    p.drain(Duration::from_millis(300));
+    // window 3 runs something other than its shell
+    p.send(b"sleep 297\r");
+    p.drain(Duration::from_millis(500));
+
+    // its row names the program, and the picker opens on window 3, so
+    // Enter keeps you there
+    p.send(b"\x01w");
+    p.expect("windows", Duration::from_secs(5));
+    p.expect("sleep 297", Duration::from_secs(5));
+    p.drain(Duration::from_millis(400));
+    p.send(b"\r");
+    p.wait_clients(&w3, Some(1), Duration::from_secs(5));
+
+    // a digit jumps to that row: window 1, the bare session name
+    p.send(b"\x01w");
+    p.expect("windows", Duration::from_secs(5));
+    p.drain(Duration::from_millis(400));
+    p.send(b"1");
+    p.wait_clients(&s, Some(1), Duration::from_secs(5));
+    p.wait_clients(&w3, Some(0), Duration::from_secs(5));
+    assert_eq!(pane_window(&p, "wa"), s);
+    // a window pick is not a session switch: prefix+0 has nowhere to go
+    p.send(b"\x010");
+    p.drain(Duration::from_millis(500));
+    assert_eq!(pane_window(&p, "wz"), s, "previous left alone");
+
+    // from window 2, ctrl-x on row 1 kills window 1 and nothing else
+    p.send(b"\x01n");
+    p.wait_clients(&w2, Some(1), Duration::from_secs(5));
+    p.drain(Duration::from_millis(300));
+    p.send(b"\x01w");
+    p.expect("windows", Duration::from_secs(5));
+    p.drain(Duration::from_millis(400));
+    p.send(b"k");
+    p.drain(Duration::from_millis(300));
+    p.send(b"\x18"); // ctrl-x
+    let end = Instant::now() + Duration::from_secs(8);
+    while Instant::now() < end && clients(&s).is_some() {
+        p.drain_now();
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(clients(&s), None, "ctrl-x killed window 1");
+    p.drain(Duration::from_millis(400));
+    p.send(b"\x1b");
+    p.wait_clients(&w2, Some(1), Duration::from_secs(5));
+    assert_eq!(clients(&w3), Some(0), "the other windows live on");
+    assert_eq!(pane_window(&p, "wb"), w2, "Esc goes back where you were");
+
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    kill_session(&s);
+    kill_session(&w2);
+    kill_session(&w3);
+}
