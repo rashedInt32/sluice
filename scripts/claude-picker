@@ -37,7 +37,7 @@ done
 # so this picker cannot drift from the session picker. One change: prism's
 # purple where the session picker has orange, so the two never read as one.
 # sluice sets $SLUICE to its own binary when it runs this script.
-style_words="$("${SLUICE:-sluice}" picker-style --label '✻ agents' --accent '#8c6ff0' \
+style_words="$("${SLUICE:-sluice}" picker-style --preview --label '✻ agents' --accent '#8c6ff0' \
   --hints 'j/k move · 1-9/enter jump · ctrl-x kill · i search · q back')" || {
   echo "claude-picker: needs a sluice with picker-style on PATH" >&2
   sleep 1.5
@@ -49,7 +49,6 @@ sel="$(fzf </dev/null "${style[@]}" \
   --bind="start:reload('$DIR/agents')" \
   --delimiter=$'\t' --with-nth='5..' \
   --preview='zmx history {s2} --vt' \
-  --preview-window='down,50%,border-rounded,follow' \
   --bind="focus:transform-preview-label:printf ' %s ' {s2}" \
   --bind="ctrl-x:execute-silent(kill {3})+reload(sleep 0.4; '$DIR/claude-picker' --list)" \
   --bind="ctrl-l:reload('$DIR/claude-picker' --list)")"

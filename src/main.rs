@@ -35,9 +35,10 @@ usage:
                                       pass the prefix key through to the program
                                       (for loom.nvim); session defaults to $ZMX_SESSION,
                                       pid to the caller; a dead pid ends the handoff
-  sluice picker-style [--label L] [--accent #rrggbb] [--hints H]
+  sluice picker-style [--label L] [--accent #rrggbb] [--hints H] [--preview]
                                       the pickers' fzf look and nav keys as quoted
-                                      shell words, for a script's own fzf
+                                      shell words, for a script's own fzf;
+                                      --preview adds the preview's place and size
   sluice --version | --help
 
 A name that is also a command (a, ls, d, kill, keys, here...) needs
@@ -276,8 +277,14 @@ fn list_cmd(args: &[String]) -> i32 {
 /// Every word is quoted, so the output is safe to eval whatever the inputs.
 fn picker_style_cmd(args: &[String]) -> i32 {
     let (mut label, mut accent, mut hints) = ("", "#ff9f1a", "");
+    let mut preview = false;
     let mut i = 0;
     while i < args.len() {
+        if args[i] == "--preview" {
+            preview = true;
+            i += 1;
+            continue;
+        }
         let val = args.get(i + 1).map(String::as_str);
         match (args[i].as_str(), val) {
             ("--label", Some(v)) => label = v,
@@ -294,7 +301,11 @@ fn picker_style_cmd(args: &[String]) -> i32 {
         }
         i += 2;
     }
-    let words: Vec<String> = picker::style_args(label, hints, accent)
+    let mut args = picker::style_args(label, hints, accent);
+    if preview {
+        args.extend(picker::preview_args());
+    }
+    let words: Vec<String> = args
         .iter()
         .map(|w| picker::sh_quote(w))
         .collect();

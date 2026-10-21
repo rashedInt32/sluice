@@ -250,11 +250,7 @@ fn fzf_with(
     cmd.args(extra);
     if let Some(p) = preview {
         cmd.arg(format!("--preview={p}"));
-        // List on top at full width, the session's screen below it. Side by
-        // side, the list lost its directories to the preview's half.
-        // `zmx history` is the whole scrollback, oldest first: `follow`
-        // shows its end, which is the screen.
-        cmd.arg("--preview-window=down,50%,border-rounded,follow");
+        cmd.args(preview_args());
         cmd.arg("--bind=focus:transform-preview-label:printf ' %s ' {s2}");
     }
     cmd.stdin(Stdio::piped())
@@ -283,6 +279,27 @@ fn fzf_with(
     let text = String::from_utf8_lossy(&out.stdout);
     let line = text.lines().next()?;
     Some(line.rsplit('\t').next().unwrap_or(line).to_string())
+}
+
+/// The preview's place and size, shared with the agent picker through
+/// `sluice picker-style --preview`.
+///
+/// List on top at full width, the session's screen below it: side by side,
+/// the list lost its directories to the preview's half. `zmx history` is
+/// the whole scrollback, oldest first, so `follow` shows its end, the
+/// screen. The list gets the rows its entries need (at least 5) and the
+/// preview the rest, worked out again on every load (a kill reloads) and
+/// resize. 11 is fzf's own lines around them: margins, the input box, the
+/// list's border and footer, the preview's border.
+pub fn preview_args() -> Vec<String> {
+    let fit = "n=$FZF_TOTAL_COUNT; [ \"$n\" -lt 5 ] && n=5; \
+               p=$((FZF_LINES - n - 11)); [ \"$p\" -lt 5 ] && p=5; \
+               echo \"change-preview-window($p)\"";
+    vec![
+        "--preview-window=down,50%,border-rounded,follow".to_string(),
+        format!("--bind=load:transform:{fit}"),
+        format!("--bind=resize:transform:{fit}"),
+    ]
 }
 
 /// The look and the nav keys every sluice picker shares, `accent` marking
