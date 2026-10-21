@@ -352,8 +352,10 @@ fn nav_binds(label: &str, accent: &str) -> Vec<String> {
         paint(accent, true, "search"),
         paint(FAINT, false, label),
     );
+    // Back in nav mode the query goes: with it, row 1 of what is shown may
+    // be drawn as "3", and the digits would pick by place, not by number.
     let to_nav = format!(
-        "rebind({NAV_KEYS})+change-prompt({NAV_PROMPT})+change-input-label()+change-list-label( {label} )+change-ghost(i search)"
+        "rebind({NAV_KEYS})+clear-query+change-prompt({NAV_PROMPT})+change-input-label()+change-list-label( {label} )+change-ghost(i search)"
     );
     let mut v = vec![
         "--bind=j:down".to_string(),
@@ -367,8 +369,12 @@ fn nav_binds(label: &str, accent: &str) -> Vec<String> {
             "--bind=esc:transform:[ \"$FZF_PROMPT\" = \"{NAV_PROMPT}\" ] && echo abort || echo \"{to_nav}\""
         ),
     ];
+    // fzf clamps pos(): on a list of 3, `7` would take row 3. Only a row
+    // that is there is picked.
     for n in 1..=9 {
-        v.push(format!("--bind={n}:pos({n})+accept"));
+        v.push(format!(
+            "--bind={n}:transform:[ \"$FZF_MATCH_COUNT\" -ge {n} ] && echo \"pos({n})+accept\""
+        ));
     }
     v
 }
@@ -439,9 +445,9 @@ mod tests {
             "+change-input-label( \x1b[1;38;2;255;159;26msearch\x1b[0m )",
             "+change-list-label( \x1b[38;2;108;108;108msessions\x1b[0m )+change-ghost()",
             "--bind=/:unbind(",
-            "--bind=5:pos(5)+accept",
-            "--bind=9:pos(9)+accept",
-            "--bind=esc:transform:[ \"$FZF_PROMPT\" = \"❯ \" ] && echo abort || echo \"rebind(j,k,q,i,a,/,1,2,3,4,5,6,7,8,9)+change-prompt(❯ )+change-input-label()+change-list-label( sessions )+change-ghost(i search)\"",
+            "--bind=5:transform:[ \"$FZF_MATCH_COUNT\" -ge 5 ] && echo \"pos(5)+accept\"",
+            "--bind=9:transform:[ \"$FZF_MATCH_COUNT\" -ge 9 ] && echo \"pos(9)+accept\"",
+            "--bind=esc:transform:[ \"$FZF_PROMPT\" = \"❯ \" ] && echo abort || echo \"rebind(j,k,q,i,a,/,1,2,3,4,5,6,7,8,9)+clear-query+change-prompt(❯ )+change-input-label()+change-list-label( sessions )+change-ghost(i search)\"",
         ] {
             assert!(b.contains(needle), "missing {needle}\n{b}");
         }
@@ -584,7 +590,7 @@ mod tests {
         assert!(all.contains("pointer:#8c6ff0,list-border:#8c6ff0"), "{all}");
         assert!(all.contains("\x1b[1;38;2;140;111;240m/ "), "search prompt in the accent");
         assert!(all.contains("--list-label= ✻ agents "));
-        assert!(all.contains("--bind=5:pos(5)+accept"), "digits jump in every picker");
+        assert!(all.contains("echo \"pos(5)+accept\""), "digits jump in every picker");
         assert!(all.contains("--footer="));
         assert!(
             !v.iter().any(|a| a.starts_with("--nth") || a.starts_with("--with-nth") || a.starts_with("--delimiter")),
