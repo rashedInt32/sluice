@@ -40,6 +40,8 @@ pub struct Runner {
     titles: title::Filter,
     /// this client's entry in the registry, for the window on screen
     registration: Option<clients::Registration>,
+    /// how many times a window was attached; the first is the one asked for
+    attaches: u32,
 }
 
 impl Drop for Runner {
@@ -81,6 +83,7 @@ impl Runner {
             kbd_saved: HashMap::new(),
             titles: title::Filter::default(),
             registration: None,
+            attaches: 0,
         };
         r.attach(&target, cwd, None)?;
         Ok(r)
@@ -112,6 +115,7 @@ impl Runner {
         }
         let child = sys::spawn_pty(&argv, cwd, &ws)?;
         self.child = Some(child);
+        self.attaches += 1;
         if self.cfg.title {
             let _ = sys::write_all(STDOUT, &title::set(zmx::window_of(name).0));
         }
@@ -152,7 +156,23 @@ impl Runner {
         let _ = sys::write_all(STDOUT, NEUTRAL);
         self.registration = None;
         let live = zmx::list();
-        if live.iter().any(|s| s.name == self.current) || self.cfg.on_end == OnEnd::Close {
+        let alive = live.iter().any(|s| s.name == self.current);
+        // zmx attach ends 0 when its window ends or is killed. Not 0 with no
+        // window means zmx would not open it, a name too long for its socket
+        // directory say, and its message is on screen.
+        if code != 0 && !alive {
+            let name = self.current.clone();
+            self.forget(&name);
+            if self.attaches == 1 {
+                return Flow::Exit(1);
+            }
+            let msg = format!("\r\nsluice: zmx did not open `{name}`. Press a key.\r\n");
+            let _ = sys::write_all(STDOUT, msg.as_bytes());
+            let mut key = [0u8; 64];
+            let _ = sys::read(STDIN, &mut key);
+            return self.land_after_loss(&live, 1);
+        }
+        if alive || self.cfg.on_end == OnEnd::Close {
             return Flow::Exit(code);
         }
         self.forget(&self.current.clone());

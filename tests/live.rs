@@ -1373,3 +1373,58 @@ fn prefix_0_does_not_bring_back_a_killed_session() {
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }
+
+#[test]
+fn a_name_zmx_refuses_is_an_error_not_another_session() {
+    if !zmx_present() {
+        return;
+    }
+    // zmx caps a name by its socket path: 46 bytes here, ~100 anywhere.
+    let mut env = Env::new("ln", "");
+    let other = env.session("ln-other");
+    env.make(&other);
+    let long = format!("{}-{}", uniq("ln"), "x".repeat(120));
+    env.sessions.push(long.clone());
+    let p = env.spawn(&[&long]);
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(1));
+    assert_eq!(clients(&other), Some(0), "landed in another session instead");
+}
+
+#[test]
+fn a_new_window_zmx_refuses_says_so_and_goes_back() {
+    if !zmx_present() {
+        return;
+    }
+    // Window 1 fits zmx's limit and window 2 (`+2`) does not. The limit
+    // depends on the socket directory, so find it from zmx's own message.
+    let probe = std::process::Command::new("zmx")
+        .args(["attach", &"y".repeat(200)])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let msg = String::from_utf8_lossy(&probe.stderr).into_owned()
+        + &String::from_utf8_lossy(&probe.stdout);
+    let Some(max) = msg
+        .split("max ")
+        .nth(1)
+        .and_then(|r| r.split_whitespace().next())
+        .and_then(|n| n.parse::<usize>().ok())
+    else {
+        eprintln!("no cap found in {msg:?}");
+        return; // this zmx does not cap names
+    };
+    let mut env = Env::new("lw", "");
+    let mut name = uniq("lw");
+    while name.len() < max - 1 {
+        name.push('x');
+    }
+    env.sessions.push(name.clone());
+    let p = env.spawn(&[&name]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"\x01c");
+    p.expect("zmx did not open", Duration::from_secs(5));
+    p.send(b"x");
+    p.wait_clients(&name, Some(1), Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+}
