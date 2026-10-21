@@ -335,6 +335,13 @@ pub fn signal_pipe() -> io::Result<RawFd> {
     Ok(fds[0])
 }
 
+/// Put signals back on the pipe for the event loop's next turn.
+pub fn repost_signals(sigs: &[libc::c_int]) {
+    for &s in sigs {
+        on_signal(s);
+    }
+}
+
 /// Drop any `drop` signals waiting on the pipe, keeping the rest for the
 /// event loop.
 pub fn discard_signals(fd: RawFd, drop: &[libc::c_int]) {

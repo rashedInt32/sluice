@@ -398,7 +398,8 @@ impl Runner {
     }
 
     fn on_signals(&mut self) -> Flow {
-        for sig in sys::drain_signals(self.sig_fd) {
+        let sigs = sys::drain_signals(self.sig_fd);
+        for (i, &sig) in sigs.iter().enumerate() {
             match sig {
                 libc::SIGWINCH => {
                     if let Some(c) = &self.child {
@@ -411,6 +412,9 @@ impl Runner {
                             let m = c.master;
                             self.child = None;
                             sys::close(m);
+                            // The caller polls again after a new attach; what
+                            // came in with this SIGCHLD waits for that turn.
+                            sys::repost_signals(&sigs[i + 1..]);
                             return self.after_child_exit(code);
                         }
                     }
