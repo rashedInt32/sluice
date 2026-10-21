@@ -132,6 +132,7 @@ pub fn spawn_pty(argv: &[&str], cwd: Option<&str>, ws: &libc::winsize) -> io::Re
                 libc::SIGHUP,
                 libc::SIGTERM,
                 libc::SIGINT,
+                libc::SIGQUIT,
                 libc::SIGUSR1,
             ] {
                 libc::signal(sig, libc::SIG_DFL);
@@ -320,6 +321,7 @@ pub fn signal_pipe() -> io::Result<RawFd> {
         libc::SIGHUP,
         libc::SIGTERM,
         libc::SIGINT,
+        libc::SIGQUIT,
         libc::SIGUSR1,
     ] {
         let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
@@ -331,6 +333,16 @@ pub fn signal_pipe() -> io::Result<RawFd> {
         }
     }
     Ok(fds[0])
+}
+
+/// Drop any `drop` signals waiting on the pipe, keeping the rest for the
+/// event loop.
+pub fn discard_signals(fd: RawFd, drop: &[libc::c_int]) {
+    for s in drain_signals(fd) {
+        if !drop.contains(&s) {
+            on_signal(s);
+        }
+    }
 }
 
 /// Drains the signal pipe and returns the set of signals seen.

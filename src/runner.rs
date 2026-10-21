@@ -394,7 +394,7 @@ impl Runner {
                         return Flow::Exit(code);
                     }
                 }
-                libc::SIGHUP | libc::SIGTERM | libc::SIGINT => {
+                libc::SIGHUP | libc::SIGTERM | libc::SIGINT | libc::SIGQUIT => {
                     self.detach();
                     return Flow::Exit(0);
                 }
@@ -539,6 +539,9 @@ impl Runner {
         self.raw.suspend();
         let out = f();
         self.raw.resume();
+        // Out of raw mode, ctrl+c and ctrl+\ signal the whole foreground
+        // group, sluice with the script. They were meant for the script.
+        sys::discard_signals(self.sig_fd, &[libc::SIGINT, libc::SIGQUIT]);
         out
     }
 

@@ -1218,3 +1218,78 @@ fn title_on_shows_the_session_and_keeps_programs_from_changing_it() {
     kill_session(&s);
     let _ = std::fs::remove_dir_all(&cfg);
 }
+
+/// A test's own config and state dirs, and every session it names, killed
+/// on drop so a failing test leaves nothing running.
+struct Env {
+    dir: std::path::PathBuf,
+    cfg: String,
+    state: String,
+    sessions: Vec<String>,
+}
+
+impl Env {
+    fn new(tag: &str, config: &str) -> Env {
+        let dir = std::env::temp_dir().join(format!("sluice-audit-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("cfg/sluice")).unwrap();
+        std::fs::create_dir_all(dir.join("state")).unwrap();
+        std::fs::write(dir.join("cfg/sluice/config"), config).unwrap();
+        Env {
+            cfg: dir.join("cfg").to_str().unwrap().to_string(),
+            state: dir.join("state").to_str().unwrap().to_string(),
+            dir,
+            sessions: Vec::new(),
+        }
+    }
+    fn session(&mut self, tag: &str) -> String {
+        let s = uniq(tag);
+        self.sessions.push(s.clone());
+        s
+    }
+    fn spawn(&self, args: &[&str]) -> Pty {
+        spawn(args, &[("XDG_CONFIG_HOME", &self.cfg), ("XDG_STATE_HOME", &self.state)])
+    }
+    /// Start `name` and detach, leaving it running.
+    fn make(&self, name: &str) {
+        let p = self.spawn(&[name]);
+        p.expect("$", Duration::from_secs(5));
+        p.send(b"\x01d");
+        assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    }
+}
+
+impl Drop for Env {
+    fn drop(&mut self) {
+        for s in &self.sessions {
+            kill_session(s);
+            for k in 2..6 {
+                kill_session(&format!("{s}+{k}"));
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+#[test]
+fn ctrl_c_and_ctrl_backslash_in_a_run_script_reach_only_the_script() {
+    if !zmx_present() {
+        return;
+    }
+    // The script waits on read: ctrl+c / ctrl+\ end it, and sluice must
+    // take the window back rather than end with it.
+    let mut env = Env::new("cc", "bind j run read x\n");
+    let a = env.session("cc");
+    let p = env.spawn(&[&a]);
+    p.expect("$", Duration::from_secs(5));
+    p.wait_clients(&a, Some(1), Duration::from_secs(3));
+    for key in [b"\x03", b"\x1c"] {
+        p.send(b"\x01j");
+        p.wait_clients(&a, Some(0), Duration::from_secs(3));
+        std::thread::sleep(Duration::from_millis(300));
+        p.send(key);
+        p.wait_clients(&a, Some(1), Duration::from_secs(3));
+        assert_eq!(p.wait_exit(Duration::from_millis(500)), None, "{key:?} ended sluice");
+    }
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+}
