@@ -287,16 +287,19 @@ fn fzf_with(
 /// List on top at full width, the session's screen below it: side by side,
 /// the list lost its directories to the preview's half. `zmx history` is
 /// the whole scrollback, oldest first, so `follow` shows its end, the
-/// screen. The list gets the rows its entries need (at least 5) and the
-/// preview the rest, worked out again on every load (a kill reloads) and
-/// resize. 11 is fzf's own lines around them: margins, the input box, the
-/// list's border and footer, the preview's border.
+/// screen. The preview takes 60% of the height, so two sessions still get
+/// a list of a fair size; when the entries need more rows than the other
+/// 40% holds, the list grows and the preview gives way, down to 5 lines.
+/// Worked out again on every load (a kill reloads) and resize. 11 is fzf's
+/// own lines around them: margins, the input box, the list's border and
+/// footer, the preview's border.
 pub fn preview_args() -> Vec<String> {
-    let fit = "n=$FZF_TOTAL_COUNT; [ \"$n\" -lt 5 ] && n=5; \
-               p=$((FZF_LINES - n - 11)); [ \"$p\" -lt 5 ] && p=5; \
+    let fit = "p=$((FZF_LINES * 60 / 100)); \
+               fit=$((FZF_LINES - FZF_TOTAL_COUNT - 11)); \
+               [ \"$fit\" -lt \"$p\" ] && p=$fit; [ \"$p\" -lt 5 ] && p=5; \
                echo \"change-preview-window($p)\"";
     vec![
-        "--preview-window=down,50%,border-rounded,follow".to_string(),
+        "--preview-window=down,60%,border-rounded,follow".to_string(),
         format!("--bind=load:transform:{fit}"),
         format!("--bind=resize:transform:{fit}"),
     ]
