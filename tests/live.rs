@@ -16,11 +16,76 @@ fn spawn(args: &[&str], env: &[(&str, &str)]) -> Pty {
 
 /// As `spawn`, for any program: `/bin/sh -c '... exec sluice'` runs sluice
 /// under a pid chosen beforehand.
+/// Every zmx a test runs, sluice's included, uses a socket directory of the
+/// test's own. Sessions of the user's, or of tests running at the same
+/// time, are then out of reach: a test whose window ends would otherwise
+/// fall back to one of them. libtest runs each test on its own thread.
+/// Short, as zmx caps socket path length.
+fn zdir() -> String {
+    thread_local! {
+        static DIR: ZmxDir = {
+            static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+            let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let dir = format!("/tmp/sit-{}-{n}", std::process::id());
+            std::fs::create_dir_all(&dir).unwrap();
+            ZmxDir(dir)
+        };
+    }
+    DIR.with(|d| d.0.clone())
+}
+
+/// A test's zmx directory. When the test's thread ends, whatever it left
+/// running there (a test that failed before its cleanup) is killed and the
+/// directory removed.
+struct ZmxDir(String);
+
+impl Drop for ZmxDir {
+    fn drop(&mut self) {
+        let list = Command::new("zmx")
+            .arg("list")
+            .env("ZMX_DIR", &self.0)
+            .output();
+        if let Ok(out) = list {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                let name = line
+                    .split('\t')
+                    .next()
+                    .and_then(|f| f.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{2192}').strip_prefix("name="));
+                if let Some(n) = name {
+                    let _ = Command::new("zmx")
+                        .args(["kill", n])
+                        .env("ZMX_DIR", &self.0)
+                        .output();
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// `zmx` with this test's socket directory.
+fn zmx() -> Command {
+    let mut c = Command::new("zmx");
+    c.env("ZMX_DIR", zdir());
+    c
+}
+
+/// The sluice under test, with this test's socket directory.
+fn sluice() -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_sluice"));
+    c.env("ZMX_DIR", zdir());
+    c
+}
+
 fn spawn_argv(exe: &str, args: &[&str], env: &[(&str, &str)]) -> Pty {
+    let z = zdir();
     // zmx starts new sessions with $SHELL: a plain sh prompt keeps the tests
     // independent of the user's zsh theme.
     let mut env: Vec<(&str, &str)> = env.to_vec();
     env.push(("SHELL", "/bin/sh"));
+    if !env.iter().any(|(k, _)| *k == "ZMX_DIR") {
+        env.push(("ZMX_DIR", &z));
+    }
     let env = &env[..];
     let mut argv: Vec<CString> = vec![CString::new(exe).unwrap()];
     argv.extend(args.iter().map(|a| CString::new(*a).unwrap()));
@@ -181,7 +246,7 @@ impl Drop for Pty {
 }
 
 fn zmx_present() -> bool {
-    let ok = Command::new("zmx")
+    let ok = zmx()
         .arg("version")
         .output()
         .map(|o| o.status.success())
@@ -194,7 +259,7 @@ fn zmx_present() -> bool {
 
 /// `(clients)` for a session name from `zmx list`, None if absent.
 fn clients(name: &str) -> Option<u32> {
-    let out = Command::new("zmx").arg("list").output().unwrap();
+    let out = zmx().arg("list").output().unwrap();
     let text = String::from_utf8_lossy(&out.stdout);
     for line in text.lines() {
         let mut nm = None;
@@ -219,7 +284,17 @@ fn clients(name: &str) -> Option<u32> {
 }
 
 fn kill_session(name: &str) {
-    let _ = Command::new("zmx").args(["kill", name]).output();
+    let _ = zmx().args(["kill", name]).output();
+}
+
+/// `clients(name)` once it reads `want`, for counts zmx updates a moment
+/// after the fact. Panics after 5 s.
+fn wait_count(name: &str, want: Option<u32>) {
+    let end = Instant::now() + Duration::from_secs(5);
+    while clients(name) != want {
+        assert!(Instant::now() < end, "{name}: clients={:?}, wanted {want:?}", clients(name));
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn uniq(tag: &str) -> String {
@@ -332,7 +407,7 @@ fn shell_exit_ends_sluice_and_session() {
     p.wait_clients(&name, None, Duration::from_secs(8));
     // With `on-end previous` sluice moves to another live session if there is
     // one, otherwise it exits. Either way the ended session is gone.
-    let others = Command::new("zmx").arg("list").output().unwrap();
+    let others = zmx().arg("list").output().unwrap();
     let any_left = String::from_utf8_lossy(&others.stdout).contains("name=");
     match p.wait_exit(Duration::from_secs(3)) {
         Some(_) => {} // no other session to move to, or it closed cleanly
@@ -430,7 +505,7 @@ fn resize_reaches_the_session_and_numbered_jump_works() {
     p.expect("31 91", Duration::from_secs(5));
 
     // numbered jump: find a's number from `sluice list`, press it
-    let out = Command::new(env!("CARGO_BIN_EXE_sluice"))
+    let out = sluice()
         .arg("list")
         .output()
         .unwrap();
@@ -446,7 +521,7 @@ fn resize_reaches_the_session_and_numbered_jump_works() {
         // Other tests create sessions in parallel; one created in the same
         // second with a smaller name shifts a's number between our list and the
         // press. Then the row that is now at n must be the one we landed on.
-        let out = Command::new(env!("CARGO_BIN_EXE_sluice"))
+        let out = sluice()
             .arg("list")
             .output()
             .unwrap();
@@ -505,7 +580,7 @@ fn kitty_flags_are_neutralised_for_pickers_and_restored_after() {
 }
 
 fn sluice_cmd(args: &[&str], state_dir: &str) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_sluice"))
+    sluice()
         .args(args)
         .env("XDG_STATE_HOME", state_dir)
         .output()
@@ -568,11 +643,18 @@ fn cancelled_picker_exits_three() {
     std::fs::create_dir_all(dir.join("sluice")).unwrap();
     std::fs::write(dir.join("sluice/config"), "bind s run false\nunbind g\n").unwrap();
     let xdg = dir.to_str().unwrap();
+    // a session, so the picker opens
+    let s = uniq("cp");
+    let p = spawn(&[&s], &[("XDG_CONFIG_HOME", xdg)]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     let p = spawn(&[], &[("XDG_CONFIG_HOME", xdg)]);
     std::thread::sleep(Duration::from_millis(800));
     p.drain_now();
     p.send(b"\x1b");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(3));
+    kill_session(&s);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -827,7 +909,7 @@ fn a_run_script_can_name_the_command_a_new_session_starts() {
     p.send(b"\x01j");
     p.wait_clients(&target, Some(1), Duration::from_secs(5));
     p.drain(Duration::from_millis(400));
-    let out = Command::new("zmx")
+    let out = zmx()
         .args(["history", &target, "--screen"])
         .output()
         .unwrap();
@@ -999,7 +1081,7 @@ fn the_session_picker_opens_on_the_current_session() {
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     for s in [&first, &second] {
-        let _ = Command::new("zmx")
+        let _ = zmx()
             .args(["kill", s])
             .env("ZMX_DIR", &z)
             .output();
@@ -1052,7 +1134,7 @@ fn windows_open_cycle_and_stay_one_session() {
     p.wait_clients(&w3, Some(1), Duration::from_secs(5));
 
     // the session list folds the windows into one row with a count
-    let out = Command::new(env!("CARGO_BIN_EXE_sluice"))
+    let out = sluice()
         .args(["list", "--rows"])
         .output()
         .unwrap();
@@ -1070,7 +1152,7 @@ fn windows_open_cycle_and_stay_one_session() {
 
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
-    let out = Command::new(env!("CARGO_BIN_EXE_sluice"))
+    let out = sluice()
         .args(["kill", &s])
         .output()
         .unwrap();
@@ -1125,7 +1207,8 @@ fn prefix_x_kills_only_the_window_on_screen() {
     p.expect("yes, kill", Duration::from_secs(5));
     p.send(b"\r");
     p.drain(Duration::from_millis(500));
-    assert_eq!(clients(&w2), Some(1), "Enter alone killed the window");
+    // back on the window: one client once zmx has counted the reattach
+    p.wait_clients(&w2, Some(1), Duration::from_secs(5));
 
     p.send(b"\x01x");
     p.expect("yes, kill", Duration::from_secs(5));
@@ -1260,6 +1343,7 @@ impl Env {
         p.expect("$", Duration::from_secs(5));
         p.send(b"\x01d");
         assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+        wait_count(name, Some(0));
     }
 }
 
@@ -1369,7 +1453,7 @@ fn prefix_0_does_not_bring_back_a_killed_session() {
     p.send(b"\x010");
     std::thread::sleep(Duration::from_millis(800));
     assert_eq!(clients(&b), None, "prefix+0 made the killed session anew");
-    assert_eq!(clients(&a), Some(1), "and the pane stays where it is");
+    wait_count(&a, Some(1)); // the pane stays where it is
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }
@@ -1387,6 +1471,9 @@ fn a_name_zmx_refuses_is_an_error_not_another_session() {
     env.sessions.push(long.clone());
     let p = env.spawn(&[&long]);
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(1));
+    // zmx's count trails a detach under load: poll, then hold steady
+    wait_count(&other, Some(0));
+    std::thread::sleep(Duration::from_millis(300));
     assert_eq!(clients(&other), Some(0), "landed in another session instead");
 }
 
@@ -1397,7 +1484,7 @@ fn a_new_window_zmx_refuses_says_so_and_goes_back() {
     }
     // Window 1 fits zmx's limit and window 2 (`+2`) does not. The limit
     // depends on the socket directory, so find it from zmx's own message.
-    let probe = std::process::Command::new("zmx")
+    let probe = zmx()
         .args(["attach", &"y".repeat(200)])
         .stdin(std::process::Stdio::null())
         .output()
@@ -1540,8 +1627,10 @@ fn the_startup_sessionizer_runs_its_command() {
         format!("sessionizer {}\n", script.display()),
     )
     .unwrap();
+    // a session, so the picker opens; q there goes to the sessionizer
+    let other = env.session("sz-other");
+    env.make(&other);
     let p = env.spawn(&[]);
-    // the picker opens when sessions exist; q goes to the sessionizer
     std::thread::sleep(Duration::from_millis(800));
     p.drain_now();
     p.send(b"q");
