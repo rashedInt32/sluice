@@ -6,6 +6,7 @@
 #   + branch   -> a branch with no worktree -> create a worktree for it, then switch
 #   type name  -> no match                  -> new branch + worktree, then switch
 # Prints "<session>\t<path>" for sluice; one worktree = one branch = one session.
+# A detached worktree has no branch: its directory name stands in for one.
 #
 # The repo is taken from $PWD, which for sluice is the directory the picker was
 # started from: set SLUICE_REPO to override.
@@ -22,7 +23,7 @@ wt_porcelain=$(git -C "$repo_root" worktree list --porcelain)
 wt_rows=$(printf '%s\n' "$wt_porcelain" | awk '
   /^worktree /{p=substr($0,10)}
   /^branch /{b=$2; sub("refs/heads/","",b); print "● "b"\t"b"\t"p}
-  /^detached$/{print "● (detached)\t(detached)\t"p}
+  /^detached$/{n=split(p,d,"/"); b="(detached "d[n]")"; print "● "b"\t"b"\t"p}
 ')
 wt_branches=$(printf '%s\n' "$wt_porcelain" | awk '
   /^branch /{b=$2; sub("refs/heads/","",b); print b}')

@@ -69,7 +69,10 @@ fi
 # would send sluice to whichever window of that session was shown last.
 # Window 1 has no suffix of its own, so it is spelled `<session>+1`.
 win="$(printf '%s\n' "$sel" | cut -f2)"
-case "$win" in
-  *+[0-9]*) printf '%s\n' "$win" ;;
-  *) printf '%s+1\n' "$win" ;;
-esac
+# Only a trailing +<n> as sluice writes it is a window: `c++17-tools` is a
+# session name.
+if [[ "$win" =~ \+[1-9][0-9]*$ ]]; then
+  printf '%s\n' "$win"
+else
+  printf '%s+1\n' "$win"
+fi
