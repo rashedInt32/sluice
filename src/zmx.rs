@@ -47,14 +47,24 @@ fn parse_line(line: &str) -> Option<Session> {
         cwd: String::new(),
         dir: String::new(),
     };
-    for field in line.split('\t') {
-        // `zmx list` prefixes the caller's own session with an arrow marker.
-        let field = field
-            .trim()
-            .trim_start_matches(|c: char| !c.is_ascii_alphanumeric());
+    // zmx prints its own fields first and the session's labels after, and a
+    // label may reuse a field's key (`created=1`): the first one wins.
+    let mut seen: Vec<&str> = Vec::new();
+    for (i, field) in line.split('\t').enumerate() {
+        // `zmx list` indents each line and marks the caller's own session
+        // with an arrow; only the first field carries either.
+        let field = match i {
+            0 => field.trim_start_matches(|c: char| c.is_whitespace() || c == '→'),
+            _ => field,
+        };
         let Some((k, v)) = field.split_once('=') else {
             continue;
         };
+        let v = v.trim_end_matches('\r');
+        if seen.contains(&k) {
+            continue;
+        }
+        seen.push(k);
         match k {
             "name" => s.name = v.to_string(),
             "created" => s.created = v.parse().unwrap_or(0),
@@ -302,6 +312,17 @@ mod tests {
         assert_eq!(v.len(), 2, "{v:?}");
         assert_eq!(v[0].name, "here");
         assert_eq!(v[0].clients, 1);
+    }
+
+    #[test]
+    fn labels_do_not_override_zmx_fields() {
+        // what zmx prints after `zmx set s _name=evil created=1 .clients=9`
+        let v = parse_list(
+            "  name=s\tpid=5\tclients=0\tcreated=1792545152\tcwd=file://h/x\t.clients=9\t_name=evil\tcreated=1\n",
+        );
+        assert_eq!(v[0].name, "s");
+        assert_eq!(v[0].created, 1792545152);
+        assert_eq!(v[0].clients, 0);
     }
 
     #[test]
