@@ -28,7 +28,8 @@ usage:
                                       window named as <session>+<n>
   sluice switch <name>|- [--session S] move the pane showing this session to <name>,
                                       or back to the previous one with `-`
-  sluice detach [--session S]         detach the client showing this session
+  sluice detach [--session S]         detach the client showing this window, or
+                                      every client on session S's windows
                                       (the window closes under the shell snippet)
   sluice handoff on|off|status [--pid N] [--session S]
                                       pass the prefix key through to the program
@@ -306,6 +307,7 @@ fn kill_cmd(args: &[String]) -> i32 {
 
 fn control_cmd(verb: &str, args: &[String]) -> i32 {
     let mut session = zmx_session_env();
+    let mut explicit = false;
     let mut target: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
@@ -318,6 +320,7 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
                         return 2;
                     }
                 };
+                explicit = true;
                 i += 2;
             }
             // `-` is a name here: the previous session.
@@ -368,11 +371,12 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
         }
         _ => "detach".to_string(),
     };
-    // `--session` may name the window a client is on (what ZMX_SESSION
-    // holds) or a whole session; a session reaches every one of its windows.
+    // From inside, $ZMX_SESSION names the window the command runs in, and a
+    // bare name there is window 1: only its own pane. `--session` may name a
+    // whole session (the picker's ctrl-d), which reaches all its windows.
     let mut targets = vec![session.clone()];
     let live = zmx::list();
-    if !zmx::is_window_ref(&session) {
+    if explicit && !zmx::is_window_ref(&session) {
         if let Some(g) = zmx::groups(&live).into_iter().find(|g| g.name == session) {
             for w in g.windows {
                 if !targets.contains(&w) {

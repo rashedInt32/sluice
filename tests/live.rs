@@ -1428,3 +1428,33 @@ fn a_new_window_zmx_refuses_says_so_and_goes_back() {
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }
+
+#[test]
+fn detach_from_inside_window_1_leaves_window_2s_pane_alone() {
+    if !zmx_present() {
+        return;
+    }
+    let mut env = Env::new("dw", "");
+    let x = env.session("dw");
+    let x2 = format!("{x}+2");
+    let t1 = env.spawn(&[&x]);
+    t1.expect("$", Duration::from_secs(5));
+    let t2 = env.spawn(&[&x2]);
+    t2.expect("$", Duration::from_secs(5));
+    t2.wait_clients(&x2, Some(1), Duration::from_secs(3));
+    t1.drain(Duration::from_millis(200));
+    t1.send(
+        format!(
+            "XDG_STATE_HOME='{}' {} detach\r",
+            env.state,
+            env!("CARGO_BIN_EXE_sluice")
+        )
+        .as_bytes(),
+    );
+    assert_eq!(t1.wait_exit(Duration::from_secs(5)), Some(0));
+    assert_eq!(t2.wait_exit(Duration::from_millis(800)), None, "window 2's pane detached too");
+    // naming the session reaches every window, as the picker's ctrl-d wants
+    let out = sluice_cmd(&["detach", "--session", &x], &env.state);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(t2.wait_exit(Duration::from_secs(5)), Some(0));
+}
