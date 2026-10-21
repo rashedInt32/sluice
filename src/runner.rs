@@ -63,6 +63,24 @@ enum Flow {
     Exit(i32),
 }
 
+/// Run fzf once, in the background, so the first picker opens at once.
+/// macOS checks a binary on its first run after a boot or an upgrade: fzf's
+/// first `--version` took 965 ms, the next 16. Spawned before the first
+/// attach, so it cannot inherit the pty; a thread reaps it, and the event
+/// loop's SIGCHLD only ever waits on the attach client's pid.
+fn warm_fzf() {
+    use std::process::{Command, Stdio};
+    let child = Command::new("fzf")
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Ok(mut c) = child {
+        std::thread::spawn(move || c.wait());
+    }
+}
+
 impl Runner {
     /// `live` is a fresh `zmx list`, taken by the caller anyway.
     pub fn start(
@@ -78,6 +96,7 @@ impl Runner {
         let sig_fd = sys::signal_pipe()?;
         let raw = RawMode::enter()?;
         let scanner = Scanner::new(cfg.prefix);
+        warm_fzf();
         let target = Self::resolve(name, live, &HashMap::new());
         let mut r = Runner {
             cfg,
