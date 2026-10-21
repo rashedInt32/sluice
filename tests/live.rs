@@ -1230,7 +1230,7 @@ struct Env {
 
 impl Env {
     fn new(tag: &str, config: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("sluice-audit-{tag}-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("sluice-env-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("cfg/sluice")).unwrap();
         std::fs::create_dir_all(dir.join("state")).unwrap();
         std::fs::write(dir.join("cfg/sluice/config"), config).unwrap();
@@ -1290,6 +1290,27 @@ fn ctrl_c_and_ctrl_backslash_in_a_run_script_reach_only_the_script() {
         p.wait_clients(&a, Some(1), Duration::from_secs(3));
         assert_eq!(p.wait_exit(Duration::from_millis(500)), None, "{key:?} ended sluice");
     }
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn a_new_window_opens_in_a_directory_with_a_space_in_its_name() {
+    if !zmx_present() {
+        return;
+    }
+    let mut env = Env::new("sp", "");
+    let s = env.session("sp");
+    let dir = env.dir.join("my dir/café");
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir = dir.canonicalize().unwrap();
+    let p = env.spawn(&[&s, "-c", dir.to_str().unwrap()]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"\x01c");
+    p.wait_clients(&format!("{s}+2"), Some(1), Duration::from_secs(5));
+    p.drain(Duration::from_millis(300));
+    p.send(b"echo \"at:$(pwd)\"\r");
+    p.expect(&format!("at:{}", dir.display()), Duration::from_secs(5));
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }

@@ -74,15 +74,36 @@ fn parse_line(line: &str) -> Option<Session> {
     }
 }
 
-/// zmx reports `cwd=file://host/path`; keep just the path.
+/// zmx reports `cwd=file://host/path`, percent-encoded; keep just the path,
+/// decoded. A URL with no path after the host has no usable directory.
 fn raw_path(v: &str) -> String {
     match v.strip_prefix("file://") {
         Some(rest) => match rest.find('/') {
-            Some(i) => rest[i..].to_string(),
-            None => rest.to_string(),
+            Some(i) => percent_decode(&rest[i..]),
+            None => String::new(),
         },
         None => v.to_string(),
     }
+}
+
+/// `%XX` escapes back to bytes. A `%` not followed by two hex digits is kept
+/// as it is.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let hex = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        let digit = |k: usize| b.get(k).and_then(|&c| hex(c));
+        if let (b'%', Some(h), Some(l)) = (b[i], digit(i + 1), digit(i + 2)) {
+            out.push((h << 4) | l);
+            i += 3;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// The path for display, with $HOME shortened to ~.
@@ -281,6 +302,18 @@ mod tests {
         assert_eq!(v.len(), 2, "{v:?}");
         assert_eq!(v[0].name, "here");
         assert_eq!(v[0].clients, 1);
+    }
+
+    #[test]
+    fn cwd_is_percent_decoded() {
+        // what zmx 0.8.1 prints for /private/tmp/sluice audit/café
+        let v = parse_list(
+            "  name=a\tpid=1\tclients=0\tcreated=1\tcwd=file://192.168.1.13/private/tmp/sluice%20audit/caf%C3%A9\n",
+        );
+        assert_eq!(v[0].dir, "/private/tmp/sluice audit/café");
+        assert_eq!(percent_decode("/a%2"), "/a%2", "a short escape stays");
+        assert_eq!(percent_decode("/a%zz%41"), "/a%zzA");
+        assert_eq!(raw_path("file://host"), "", "no path, no directory");
     }
 
     #[test]
