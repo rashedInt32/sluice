@@ -69,9 +69,7 @@ pub fn config_dir() -> PathBuf {
             return PathBuf::from(x).join("sluice");
         }
     }
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
-        .join(".config")
-        .join("sluice")
+    crate::clients::home().join(".config").join("sluice")
 }
 
 impl Config {

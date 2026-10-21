@@ -166,22 +166,42 @@ fn real_main(args: &[String]) -> i32 {
 
 /// The value after flag `args[i]`. A missing one is an error rather than
 /// None, and so is one that looks like the next flag: `--current --rows`
-/// must not name a session `--rows`.
+/// must not name a session `--rows`. A single dash is fine: `sluice here`
+/// in a directory called `-x` makes a session `-x`.
 fn flag_value(args: &[String], i: usize) -> Result<String, String> {
     match args.get(i + 1) {
-        Some(v) if !v.is_empty() && !v.starts_with('-') => Ok(v.clone()),
+        Some(v) if !v.is_empty() && !v.starts_with("--") => Ok(v.clone()),
         _ => Err(format!("{} needs a value", args[i])),
     }
 }
 
+/// `x+1` is how a user may spell window 1, which zmx, the registry and the
+/// handoff marker all know as `x`.
+fn canonical_window(name: String) -> String {
+    match zmx::is_window_ref(&name) {
+        true => {
+            let (g, k) = zmx::window_of(&name);
+            zmx::window_name(g, k)
+        }
+        false => name,
+    }
+}
+
 /// The session a typed name means: one that exists under exactly that name
-/// (zmx itself takes `a.b`), else the name sanitized for a new session.
+/// (zmx itself takes `a.b`), else the name sanitized for a new session. A
+/// window spelling (`a.b+2`) keeps its session part the same way.
 fn session_name(raw: &str, live: &[zmx::Session]) -> String {
-    let exists = live.iter().any(|s| s.name == raw)
-        || zmx::groups(live).iter().any(|g| g.name == raw);
-    match exists {
-        true => raw.to_string(),
-        false => zmx::sanitize_name(raw),
+    if live.iter().any(|s| s.name == raw) {
+        return raw.to_string();
+    }
+    let (g, k) = zmx::window_of(raw);
+    let g = match zmx::groups(live).iter().any(|x| x.name == g) {
+        true => g.to_string(),
+        false => zmx::sanitize_name(g),
+    };
+    match zmx::is_window_ref(raw) {
+        true => format!("{g}+{k}"),
+        false => g,
     }
 }
 
@@ -323,8 +343,9 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
                 explicit = true;
                 i += 2;
             }
-            // `-` is a name here: the previous session.
-            other if other.starts_with('-') && other != "-" => {
+            // Flags are `--x`: `-` is the previous session, and `-x` is a
+            // name, as `sluice here` in a directory `-x` makes.
+            other if other.starts_with("--") => {
                 eprintln!("sluice: {verb}: unknown argument {other}");
                 return 2;
             }
@@ -346,15 +367,10 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
         eprintln!("sluice: {verb}: not inside a zmx session and no --session given");
         return 2;
     };
-    // `x+1` is how a user may spell window 1, which zmx and the registry
-    // know as `x`.
-    let session = match zmx::is_window_ref(&session) {
-        true => {
-            let (g, k) = zmx::window_of(&session);
-            zmx::window_name(g, k)
-        }
-        false => session,
-    };
+    // A window spelled out (`x+1`, `x+2`) is that window alone, whoever
+    // named it.
+    let one_window = zmx::is_window_ref(&session);
+    let session = canonical_window(session);
     let cmd = match (verb, &target) {
         ("switch", Some(t)) if t == "-" => "prev".to_string(),
         ("switch", Some(t)) => {
@@ -385,7 +401,7 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
     // whole session (the picker's ctrl-d), which reaches all its windows.
     let mut targets = vec![session.clone()];
     let live = zmx::list();
-    if explicit && !zmx::is_window_ref(&session) {
+    if explicit && !one_window {
         if let Some(g) = zmx::groups(&live).into_iter().find(|g| g.name == session) {
             for w in g.windows {
                 if !targets.contains(&w) {
@@ -402,8 +418,9 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
         eprintln!("sluice: no sluice client is showing `{session}`");
         return 1;
     }
-    if cmd == "detach" {
-        wait_detached(&targets, clients_on(&live, &targets), &reached);
+    if cmd == "detach" && !wait_detached(&targets, clients_on(&live, &targets), &reached) {
+        eprintln!("sluice: the client showing `{session}` did not detach");
+        return 1;
     }
     0
 }
@@ -423,21 +440,26 @@ fn clients_on(live: &[zmx::Session], targets: &[String]) -> usize {
 /// attach child is reaped: a stat per poll, no subprocess. Then confirm with
 /// `zmx list`, which can trail the reap by a moment, backing off so a client
 /// that never lets go costs a handful of spawns rather than a hundred.
-fn wait_detached(targets: &[String], before: usize, reached: &[(&String, i32)]) {
+///
+/// False when a client still holds its registration after a second: it is
+/// stopped or wedged, and the detach has not happened.
+fn wait_detached(targets: &[String], before: usize, reached: &[(&String, i32)]) -> bool {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(1);
     while reached.iter().any(|(t, p)| clients::showing(t, *p)) {
         if std::time::Instant::now() >= end {
-            return;
+            return false;
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
     }
-    // About a second in all, as long as the old fixed loop gave it.
+    // About a second in all, as long as the old fixed loop gave it. The
+    // client has let go by now; this only waits for zmx to count it out.
     for ms in [0, 5, 10, 20, 40, 80, 160, 320, 400] {
         std::thread::sleep(std::time::Duration::from_millis(ms));
         if clients_on(&zmx::list(), targets) + reached.len() <= before {
-            return;
+            break;
         }
     }
+    true
 }
 
 fn handoff_cmd(args: &[String]) -> i32 {
@@ -481,6 +503,7 @@ fn handoff_cmd(args: &[String]) -> i32 {
         eprintln!("sluice: handoff: not inside a zmx session and no --session given");
         return 2;
     };
+    let session = canonical_window(session);
     let r = match verb.as_deref() {
         Some("on") => handoff::set(&session, pid),
         Some("off") => handoff::clear(&session),
@@ -622,6 +645,11 @@ mod tests {
         assert!(flag_value(&v(&["--session"]), 0).is_err());
         assert!(flag_value(&v(&["--session", ""]), 0).is_err());
         assert!(flag_value(&v(&["--current", "--rows"]), 0).is_err());
+        assert_eq!(
+            flag_value(&v(&["--session", "-x"]), 0).as_deref(),
+            Ok("-x"),
+            "a session `sluice here` made in a directory `-x`"
+        );
     }
 
     #[test]
@@ -720,6 +748,11 @@ mod tests {
         assert_eq!(session_name("a.b", &live), "a.b", "zmx made it: keep it");
         assert_eq!(session_name("c.d", &live), "c_d", "new: sanitized");
         assert_eq!(session_name("g+2", &live), "g+2");
+        assert_eq!(session_name("a.b+1", &live), "a.b+1", "a window of a.b");
+        assert_eq!(session_name("a.b+3", &live), "a.b+3");
+        assert_eq!(session_name("c.d+2", &live), "c_d+2");
+        assert_eq!(canonical_window("x+1".into()), "x");
+        assert_eq!(canonical_window("x+2".into()), "x+2");
     }
 
     #[test]

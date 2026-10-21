@@ -1458,3 +1458,30 @@ fn detach_from_inside_window_1_leaves_window_2s_pane_alone() {
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(t2.wait_exit(Duration::from_secs(5)), Some(0));
 }
+
+#[test]
+fn a_spelled_out_window_1_is_that_window_alone_and_a_stuck_client_fails_detach() {
+    if !zmx_present() {
+        return;
+    }
+    let mut env = Env::new("w1", "");
+    let x = env.session("w1");
+    let x2 = format!("{x}+2");
+    let t1 = env.spawn(&[&x]);
+    t1.expect("$", Duration::from_secs(5));
+    let t2 = env.spawn(&[&x2]);
+    t2.expect("$", Duration::from_secs(5));
+    t2.wait_clients(&x2, Some(1), Duration::from_secs(3));
+    // `x+1` names window 1, not the session
+    let out = sluice_cmd(&["detach", "--session", &format!("{x}+1")], &env.state);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(t1.wait_exit(Duration::from_secs(5)), Some(0));
+    assert_eq!(t2.wait_exit(Duration::from_millis(800)), None, "window 2 went too");
+    // a client that cannot act on the request: detach says it failed
+    unsafe { libc::kill(t2.pid, libc::SIGSTOP) };
+    let out = sluice_cmd(&["detach", "--session", &x2], &env.state);
+    unsafe { libc::kill(t2.pid, libc::SIGCONT) };
+    assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
+    // it detaches once it runs again
+    assert_eq!(t2.wait_exit(Duration::from_secs(5)), Some(0));
+}

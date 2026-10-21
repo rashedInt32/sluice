@@ -15,8 +15,28 @@ use std::path::PathBuf;
 pub fn base() -> PathBuf {
     match std::env::var("XDG_STATE_HOME") {
         Ok(x) if x.starts_with('/') => PathBuf::from(x),
-        _ => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".local/state"),
+        _ => home().join(".local/state"),
     }
+}
+
+/// `$HOME`, or the user's home from the password database when it is unset,
+/// empty or relative, so state never lands under the current directory.
+pub fn home() -> PathBuf {
+    if let Ok(h) = std::env::var("HOME") {
+        if h.starts_with('/') {
+            return PathBuf::from(h);
+        }
+    }
+    let pw = unsafe { libc::getpwuid(libc::getuid()) };
+    if !pw.is_null() {
+        let dir = unsafe { std::ffi::CStr::from_ptr((*pw).pw_dir) };
+        if let Ok(d) = dir.to_str() {
+            if d.starts_with('/') {
+                return PathBuf::from(d);
+            }
+        }
+    }
+    PathBuf::from("/")
 }
 
 /// A session name as a file name: `%` and `/` escaped, and a leading `.`.
@@ -98,7 +118,13 @@ fn held(path: &std::path::Path) -> bool {
     let Ok(f) = std::fs::File::open(path) else {
         return false;
     };
-    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) != 0 }
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
+        return false;
+    }
+    // Only "someone holds it" means a client. Any other failure (a
+    // filesystem without flock) proves nothing, and a pid that is not
+    // provably a client must not get SIGUSR1, which kills by default.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
 }
 
 fn pids_in(base: &std::path::Path, session: &str) -> Vec<i32> {
