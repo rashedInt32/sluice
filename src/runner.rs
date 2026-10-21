@@ -264,7 +264,7 @@ impl Runner {
     }
 
     /// Name for a new window in `group`: one past the highest window number.
-    fn next_window_name(live: &[Session], group: &str) -> String {
+    fn next_window_name(live: &[Session], group: &str) -> Option<String> {
         let max = live
             .iter()
             .map(|s| zmx::window_of(&s.name))
@@ -272,7 +272,7 @@ impl Runner {
             .map(|(_, k)| k)
             .max()
             .unwrap_or(0);
-        zmx::window_name(group, max + 1)
+        (max < zmx::MAX_WINDOW).then(|| zmx::window_name(group, max + 1))
     }
 
     /// Where to go when the session on screen is gone: the previous window if
@@ -484,7 +484,9 @@ impl Runner {
             Action::NewWindow => {
                 let live = zmx::list();
                 let g = self.group();
-                let name = Self::next_window_name(&live, &g);
+                let Some(name) = Self::next_window_name(&live, &g) else {
+                    return Flow::Continue;
+                };
                 // The new window starts where the one on screen is now.
                 let dir = live
                     .iter()
@@ -794,13 +796,15 @@ mod tests {
             sess("glass+2", 2, 0),
             sess("eddy+5", 3, 0),
         ];
-        assert_eq!(Runner::next_window_name(&live, "glass"), "glass+3");
-        assert_eq!(Runner::next_window_name(&live, "eddy"), "eddy+6");
+        assert_eq!(Runner::next_window_name(&live, "glass").unwrap(), "glass+3");
+        assert_eq!(Runner::next_window_name(&live, "eddy").unwrap(), "eddy+6");
         assert_eq!(
-            Runner::next_window_name(&[], "new"),
+            Runner::next_window_name(&[], "new").unwrap(),
             "new",
             "a first window is the bare name"
         );
+        let full = vec![sess("g+9999", 1, 0)];
+        assert_eq!(Runner::next_window_name(&full, "g"), None, "no wrap past the last");
     }
 
     #[test]

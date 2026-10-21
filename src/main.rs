@@ -346,6 +346,15 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
         eprintln!("sluice: {verb}: not inside a zmx session and no --session given");
         return 2;
     };
+    // `x+1` is how a user may spell window 1, which zmx and the registry
+    // know as `x`.
+    let session = match zmx::is_window_ref(&session) {
+        true => {
+            let (g, k) = zmx::window_of(&session);
+            zmx::window_name(g, k)
+        }
+        false => session,
+    };
     let cmd = match (verb, &target) {
         ("switch", Some(t)) if t == "-" => "prev".to_string(),
         ("switch", Some(t)) => {

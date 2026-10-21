@@ -154,16 +154,21 @@ pub fn kill(name: &str) -> bool {
 /// `glass+3` -> ("glass", 3); `glass` -> ("glass", 1).
 pub fn window_of(name: &str) -> (&str, u32) {
     if let Some((group, k)) = name.rsplit_once('+') {
-        if !group.is_empty() && !k.is_empty() && k.bytes().all(|b| b.is_ascii_digit()) {
-            if let Ok(k) = k.parse::<u32>() {
-                if k >= 1 {
-                    return (group, k);
-                }
+        // Only the number as window_name spells it: `x+01` or `x+0` is a
+        // name of its own, not another way to say `x`.
+        let canonical = !k.starts_with('0') && k.bytes().all(|b| b.is_ascii_digit());
+        if !group.is_empty() && canonical {
+            if let Ok(k @ 1..=MAX_WINDOW) = k.parse::<u32>() {
+                return (group, k);
             }
         }
     }
     (name, 1)
 }
+
+/// The highest window number. Far past any real use, and it keeps
+/// `max + 1` from overflowing.
+pub const MAX_WINDOW: u32 = 9999;
 
 /// The zmx name for window `k` of `group`. Window 1 is the bare group name.
 pub fn window_name(group: &str, k: u32) -> String {
@@ -365,6 +370,9 @@ mod tests {
         );
         assert_eq!(window_of("a+b"), ("a+b", 1));
         assert_eq!(window_of("x+0"), ("x+0", 1), "there is no window 0");
+        assert_eq!(window_of("x+01"), ("x+01", 1), "not another spelling of x");
+        assert_eq!(window_of("x+4294967295"), ("x+4294967295", 1), "past the last window");
+        assert_eq!(window_of("x+9999"), ("x", 9999));
         assert_eq!(window_of("+2"), ("+2", 1), "a window needs a session");
         assert_eq!(window_name("glass", 1), "glass");
         assert_eq!(window_name("glass", 4), "glass+4");
