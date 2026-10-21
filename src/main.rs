@@ -39,7 +39,11 @@ usage:
                                       shell words, for a script's own fzf
   sluice --version | --help
 
-exit codes: 0 detached or session ended, 3 nothing picked, 1 error
+A name that is also a command (a, ls, d, kill, keys, here...) needs
+`sluice attach <name>`.
+
+exit codes: 0 detached or session ended, 3 nothing picked, 1 error,
+            2 bad arguments
 
 config: ~/.config/sluice/config   (sluice keys shows the result)
 ";
@@ -83,7 +87,7 @@ fn real_main(args: &[String]) -> i32 {
         _ => {}
     }
 
-    if let Ok(s) = std::env::var("ZMX_SESSION") {
+    if let Some(s) = zmx_session_env() {
         eprintln!("sluice: already inside zmx session `{s}`; use the prefix keys instead");
         return 1;
     }
@@ -159,6 +163,22 @@ fn real_main(args: &[String]) -> i32 {
     }
 }
 
+/// The value after flag `args[i]`. A missing one is an error rather than
+/// None, and so is one that looks like the next flag: `--current --rows`
+/// must not name a session `--rows`.
+fn flag_value(args: &[String], i: usize) -> Result<String, String> {
+    match args.get(i + 1) {
+        Some(v) if !v.is_empty() && !v.starts_with('-') => Ok(v.clone()),
+        _ => Err(format!("{} needs a value", args[i])),
+    }
+}
+
+/// `$ZMX_SESSION`, unless unset or empty. An empty name would point the
+/// client registry at its own root.
+fn zmx_session_env() -> Option<String> {
+    std::env::var("ZMX_SESSION").ok().filter(|s| !s.is_empty())
+}
+
 /// `switch <name>` and `detach` both act on the sluice client that is showing a
 /// session, so nvim or a script can drive the pane it is sitting in.
 /// `list` prints one session per line. The default is a machine format --
@@ -181,7 +201,13 @@ fn list_cmd(args: &[String]) -> i32 {
                 i += 1;
             }
             "--current" => {
-                current = args.get(i + 1).cloned().unwrap_or_default();
+                current = match flag_value(args, i) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("sluice: list: {e}");
+                        return 2;
+                    }
+                };
                 i += 2;
             }
             other => {
@@ -255,8 +281,8 @@ fn picker_style_cmd(args: &[String]) -> i32 {
 
 /// `kill <name>`: a session with every window, or `<session>+<n>` for one.
 fn kill_cmd(args: &[String]) -> i32 {
-    let Some(name) = args.first() else {
-        eprintln!("sluice: kill needs a session name");
+    let [name] = args else {
+        eprintln!("sluice: kill needs one session name");
         return 2;
     };
     let live = zmx::list();
@@ -268,16 +294,23 @@ fn kill_cmd(args: &[String]) -> i32 {
 }
 
 fn control_cmd(verb: &str, args: &[String]) -> i32 {
-    let mut session = std::env::var("ZMX_SESSION").ok();
+    let mut session = zmx_session_env();
     let mut target: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--session" => {
-                session = args.get(i + 1).cloned();
+                session = match flag_value(args, i) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("sluice: {verb}: {e}");
+                        return 2;
+                    }
+                };
                 i += 2;
             }
-            other if other.starts_with('-') => {
+            // `-` is a name here: the previous session.
+            other if other.starts_with('-') && other != "-" => {
                 eprintln!("sluice: {verb}: unknown argument {other}");
                 return 2;
             }
@@ -286,10 +319,17 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
                     eprintln!("sluice: {verb}: one name only");
                     return 2;
                 }
-                target = Some(zmx::sanitize_name(other));
+                target = Some(match other {
+                    "-" => "-".to_string(),
+                    _ => zmx::sanitize_name(other),
+                });
                 i += 1;
             }
         }
+    }
+    if verb == "detach" && target.is_some() {
+        eprintln!("sluice: detach takes no name; use --session");
+        return 2;
     }
     let Some(session) = session else {
         eprintln!("sluice: {verb}: not inside a zmx session and no --session given");
@@ -381,7 +421,7 @@ fn wait_detached(targets: &[String], before: usize, reached: &[(&String, i32)]) 
 fn handoff_cmd(args: &[String]) -> i32 {
     let mut verb = None;
     let mut pid: i32 = unsafe { libc::getppid() };
-    let mut session = std::env::var("ZMX_SESSION").ok();
+    let mut session = zmx_session_env();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -396,7 +436,13 @@ fn handoff_cmd(args: &[String]) -> i32 {
                 i += 2;
             }
             "--session" => {
-                session = args.get(i + 1).cloned();
+                session = match flag_value(args, i) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("sluice: handoff: {e}");
+                        return 2;
+                    }
+                };
                 i += 2;
             }
             v @ ("on" | "off" | "status") => {
@@ -515,7 +561,11 @@ fn parse_attach_args(args: &[String]) -> Result<Option<(String, Option<String>)>
                 if name.is_some() {
                     return Err("only one session name".into());
                 }
-                name = Some(zmx::sanitize_name(s));
+                let n = zmx::sanitize_name(s.trim());
+                if n.is_empty() {
+                    return Err("empty session name".into());
+                }
+                name = Some(n);
                 i += 1;
             }
         }
@@ -542,6 +592,38 @@ fn pick_or_sessionize(cfg: &Config, live: &[zmx::Session]) -> Option<picker::Cho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_flag_needs_a_value_that_is_not_another_flag() {
+        assert_eq!(flag_value(&v(&["--session", "x"]), 0).as_deref(), Ok("x"));
+        assert!(flag_value(&v(&["--session"]), 0).is_err());
+        assert!(flag_value(&v(&["--session", ""]), 0).is_err());
+        assert!(flag_value(&v(&["--current", "--rows"]), 0).is_err());
+    }
+
+    #[test]
+    fn an_empty_name_is_refused() {
+        assert!(parse_attach_args(&v(&[""])).is_err());
+        assert!(parse_attach_args(&v(&["attach", "  "])).is_err());
+        assert_eq!(
+            parse_attach_args(&v(&["attach", "a"])),
+            Ok(Some(("a".into(), None))),
+            "a name that is also a command, through attach"
+        );
+    }
+
+    #[test]
+    fn switch_dash_and_bad_flags_exit_two_or_reach_the_lookup() {
+        // No client anywhere: a well-formed request ends in 1 (nobody to
+        // reach), a malformed one in 2 before anything is looked up.
+        let d = std::env::temp_dir().join(format!("sluice-cli-{}", std::process::id()));
+        std::env::set_var("XDG_STATE_HOME", &d);
+        assert_eq!(control_cmd("switch", &v(&["-", "--session", "nosuch"])), 1);
+        assert_eq!(control_cmd("switch", &v(&["x", "--session"])), 2);
+        assert_eq!(control_cmd("detach", &v(&["x", "--session", "y"])), 2);
+        assert_eq!(kill_cmd(&v(&["a", "b"])), 2);
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     fn v(a: &[&str]) -> Vec<String> {
         a.iter().map(|s| s.to_string()).collect()

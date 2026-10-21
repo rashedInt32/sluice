@@ -713,6 +713,13 @@ fn switch_command_moves_the_pane_from_outside() {
     p.send(b"\x010");
     p.wait_clients(&b, Some(1), Duration::from_secs(5));
 
+    // and so does `sluice switch -`
+    let out = sluice_cmd(&["switch", "-", "--session", &b], &xdg);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    p.wait_clients(&a, Some(1), Duration::from_secs(5));
+    p.send(b"\x010");
+    p.wait_clients(&b, Some(1), Duration::from_secs(5));
+
     // a name nobody is running is refused, and the pane is untouched
     let out = sluice_cmd(&["switch", "no-such-session", "--session", &b], &xdg);
     assert_eq!(out.status.code(), Some(1));
