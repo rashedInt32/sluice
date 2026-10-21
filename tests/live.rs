@@ -1348,3 +1348,28 @@ fn a_new_client_ignores_an_inbox_left_under_its_pid() {
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }
+
+#[test]
+fn prefix_0_does_not_bring_back_a_killed_session() {
+    if !zmx_present() {
+        return;
+    }
+    let mut env = Env::new("pd", "");
+    let a = env.session("pd1");
+    let b = env.session("pd2");
+    env.make(&a);
+    let p = env.spawn(&[&b]);
+    p.expect("$", Duration::from_secs(5));
+    p.wait_clients(&b, Some(1), Duration::from_secs(3));
+    let out = sluice_cmd(&["switch", &a, "--session", &b], &env.state);
+    assert!(out.status.success());
+    p.wait_clients(&a, Some(1), Duration::from_secs(5)); // previous is b
+    kill_session(&b);
+    assert_eq!(clients(&b), None);
+    p.send(b"\x010");
+    std::thread::sleep(Duration::from_millis(800));
+    assert_eq!(clients(&b), None, "prefix+0 made the killed session anew");
+    assert_eq!(clients(&a), Some(1), "and the pane stays where it is");
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+}

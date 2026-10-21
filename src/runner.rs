@@ -429,10 +429,7 @@ impl Runner {
         };
         match verb {
             "switch" if !arg.is_empty() => self.switch_to(Choice::named(arg)),
-            "prev" => match self.previous.clone() {
-                Some(p) => self.switch_to(Choice::named(p)),
-                None => Flow::Continue,
-            },
+            "prev" => self.switch_prev(),
             "detach" => {
                 self.detach();
                 Flow::Exit(0)
@@ -456,10 +453,7 @@ impl Runner {
                 self.detach();
                 Flow::Exit(0)
             }
-            Action::Prev => match self.previous.clone() {
-                Some(p) => self.switch_to(Choice::named(p)),
-                None => Flow::Continue,
-            },
+            Action::Prev => self.switch_prev(),
             Action::Jump(n) => {
                 let live = zmx::list();
                 match zmx::groups(&live).get(n - 1) {
@@ -574,6 +568,25 @@ impl Runner {
     }
 
     /// Session switch without a picker (jump, prev, `sluice switch`).
+    /// Back to the previous session, like tmux's last-session. Its window may
+    /// have gone while the session lives on: go to the session. With nothing
+    /// left of it, do nothing; attaching would have zmx make it anew, empty.
+    fn switch_prev(&mut self) -> Flow {
+        let Some(p) = self.previous.clone() else {
+            return Flow::Continue;
+        };
+        let live = zmx::list();
+        let group = zmx::window_of(&p).0.to_string();
+        if live.iter().any(|s| s.name == p) {
+            self.switch_in(&live, Choice::named(p))
+        } else if zmx::groups(&live).iter().any(|g| g.name == group) {
+            self.switch_in(&live, Choice::named(group))
+        } else {
+            self.previous = None;
+            Flow::Continue
+        }
+    }
+
     fn switch_to(&mut self, c: Choice) -> Flow {
         self.switch_in(&zmx::list(), c)
     }
