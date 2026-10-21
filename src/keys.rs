@@ -280,6 +280,12 @@ fn scan_one(buf: &[u8]) -> Scan {
             len: 1,
         };
     }
+    // Likewise ESC plus `[`, `O` or `]` and nothing more is alt+[ / alt+O /
+    // alt+], typed: held as the start of a sequence, it would swallow the
+    // keys typed after it, the prefix included.
+    if buf.len() == 2 && matches!(buf[1], b'[' | b'O' | b']') {
+        return Scan::Other(2);
+    }
     match buf[1] {
         b'[' => match csi_len(buf) {
             Csi::Incomplete => Scan::Incomplete,
@@ -300,13 +306,19 @@ fn scan_one(buf: &[u8]) -> Scan {
                 None => Scan::Other(len),
             },
         },
-        // SS3: arrow and function keys in application mode. Anything but a
-        // final byte after it means this was alt+O.
-        b'O' => match buf.get(2) {
-            Some(0x40..=0x7e) => Scan::Other(3),
-            Some(_) => Scan::Other(2),
-            None => Scan::Incomplete,
-        },
+        // SS3: arrow and function keys in application mode, maybe with a
+        // modifier first (`ESC O 2 P`, `ESC O 1;5P`). Anything else after
+        // ESC O means this was alt+O.
+        b'O' => {
+            for (i, &b) in buf.iter().enumerate().skip(2) {
+                match b {
+                    0x40..=0x7e => return Scan::Other(i + 1),
+                    b'0'..=b'9' | b';' => {}
+                    _ => return Scan::Other(2),
+                }
+            }
+            Scan::Incomplete
+        }
         // OSC: a reply such as a clipboard read, terminated by BEL or ST.
         b']' => match osc_len(buf) {
             Some(len) => Scan::Other(len),
@@ -444,9 +456,9 @@ fn parse_mods(field: Option<&str>) -> (u32, u32) {
     (mods, event)
 }
 
-/// The key a kitty key code names. Enter, Tab and Backspace are the keys
-/// their legacy bytes decode to. Kitty's functional keys (modifiers,
-/// arrows, F-keys, keypad) live in a private-use block and are no chord
+/// The key a kitty key code names. Enter, Tab, Backspace and the keypad are
+/// the keys their legacy bytes decode to. Kitty's other functional keys
+/// (modifiers, arrows, F-keys) live in a private-use block and are no chord
 /// key: with "report all keys", the shift pressed to type `?` arrives
 /// first and must not stand in for the `?`.
 fn csi_u_key(code: u32) -> Option<Key> {
@@ -454,6 +466,17 @@ fn csi_u_key(code: u32) -> Option<Key> {
         27 => Some(Key::Esc),
         9 | 13 => Some(Key::Ctrl(legacy_ctrl(code as u8))),
         127 => Some(Key::Ctrl('?')),
+        // The keypad: the keys a legacy keypad sends.
+        57399..=57408 => char::from_digit(code - 57399, 10).map(Key::Char),
+        57409..=57415 => Some(match code {
+            57409 => Key::Char('.'),
+            57410 => Key::Char('/'),
+            57411 => Key::Char('*'),
+            57412 => Key::Char('-'),
+            57413 => Key::Char('+'),
+            57414 => Key::Ctrl('m'),
+            _ => Key::Char('='),
+        }),
         57344..=63743 => None,
         0x20..=0x10ffff => char::from_u32(code).map(Key::Char),
         _ => None,
@@ -543,18 +566,30 @@ mod tests {
 
     #[test]
     fn alt_o_alt_bracket_and_8_bit_bytes_are_not_held() {
-        // `ESC O` then the prefix: the prefix is not eaten as an SS3 final
+        // alt+O, alt+[ and alt+] typed: sent at once, and the prefix typed
+        // next is the prefix, not the end of a sequence
+        for alt in [&b"\x1bO"[..], b"\x1b[", b"\x1b]"] {
+            let mut s = Scanner::new(Key::Ctrl('a'));
+            assert_eq!(s.feed(alt), vec![Event::Bytes(alt.to_vec())]);
+            let ev = s.feed(b"\x01d");
+            assert!(matches!(ev[..], [Event::Chord { key: Key::Char('d'), .. }]), "{alt:?}");
+        }
+        // with the same keys arriving one read each, alt+[ then `200~`
+        // typed is text, not a paste that never ends
         let mut s = Scanner::new(Key::Ctrl('a'));
-        assert_eq!(s.feed(b"\x1bO"), vec![]);
-        let ev = s.feed(b"\x01d");
-        assert_eq!(ev[0], Event::Bytes(b"\x1bO".to_vec()));
-        assert!(matches!(ev[1], Event::Chord { key: Key::Char('d'), .. }));
-        // same for `ESC [`
+        for k in [&b"\x1b["[..], b"2", b"0", b"0", b"~", b"x"] {
+            s.feed(k);
+        }
+        assert!(matches!(s.feed(b"\x01d")[..], [Event::Chord { key: Key::Char('d'), .. }]));
+        // SS3 with a modifier passes whole while armed
         let mut s = Scanner::new(Key::Ctrl('a'));
-        s.feed(b"\x1b[");
-        let ev = s.feed(b"\x01d");
-        assert_eq!(ev[0], Event::Bytes(b"\x1b[".to_vec()));
-        assert!(matches!(ev[1], Event::Chord { key: Key::Char('d'), .. }));
+        s.feed(b"\x01");
+        assert_eq!(s.feed(b"\x1bO2P"), vec![Event::Bytes(b"\x1bO2P".to_vec())]);
+        assert!(s.is_waiting());
+        // kitty keypad 1 after the prefix is the chord key `1`
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"\x1b[97;5u");
+        assert_eq!(chord(&s.feed(b"\x1b[57400u")[0]), Some(Key::Char('1')));
         // 8-bit meta alt+a is one byte, and what follows is not held behind it
         let mut s = Scanner::new(Key::Ctrl('a'));
         let mut got = Vec::new();
@@ -621,7 +656,9 @@ mod tests {
         let mut whole = Vec::new();
         flat(Scanner::new(Key::Ctrl('a')).feed(input), &mut whole);
         for k in 1..input.len() {
-            if input[k - 1] == 0x1b {
+            // ESC, or ESC plus `[` / `O` / `]`, ending a read is a key by
+            // design, not a sequence's start.
+            if input[k - 1] == 0x1b || (k >= 2 && input[k - 2] == 0x1b) {
                 continue;
             }
             let mut s = Scanner::new(Key::Ctrl('a'));

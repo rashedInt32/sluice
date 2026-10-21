@@ -188,7 +188,8 @@ enum Csi {
 /// The CSI sequence at buf[0] == ESC, buf[1] == '['.
 fn csi_len(buf: &[u8]) -> Csi {
     for (i, &b) in buf.iter().enumerate().skip(2) {
-        if b == 0x1b || i > 64 {
+        // ESC starts another sequence; CAN and SUB cancel this one.
+        if matches!(b, 0x1b | 0x18 | 0x1a) || i > 64 {
             return Csi::Broken;
         }
         if (0x40..=0x7e).contains(&b) {
@@ -274,6 +275,13 @@ mod tests {
         let mut k = KittyState::default();
         k.feed(b"\x1b[\x1b[>1u");
         assert_eq!(k.flags(), (1, 0));
+    }
+
+    #[test]
+    fn can_or_sub_cancels_a_csi() {
+        let mut k = KittyState::default();
+        k.feed(b"\x1b[>5u\x1b[>1\x18u\x1b[<u");
+        assert_eq!(k.flags(), (0, 0), "the cancelled push was not counted");
     }
 
     #[test]
