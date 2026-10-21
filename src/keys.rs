@@ -237,9 +237,8 @@ fn scan_one(buf: &[u8]) -> Scan {
     let b = buf[0];
     if b != 0x1b {
         if b < 0x20 {
-            let c = ((b + 0x60) as char).to_ascii_lowercase();
             return Scan::Key {
-                key: Key::Ctrl(c),
+                key: Key::Ctrl(legacy_ctrl(b)),
                 exact: true,
                 len: 1,
             };
@@ -311,10 +310,29 @@ fn scan_one(buf: &[u8]) -> Scan {
 fn report_key(rep: KeyReport) -> (Key, bool) {
     match rep.key {
         Key::Char(c) if rep.mods & MOD_CTRL != 0 => {
-            (Key::Ctrl(c.to_ascii_lowercase()), rep.mods == MOD_CTRL)
+            (Key::Ctrl(ctrl_name(c.to_ascii_lowercase())), rep.mods == MOD_CTRL)
         }
         Key::Char(c) => (Key::Char(c), rep.mods & !MOD_SHIFT == 0),
         k => (k, true),
+    }
+}
+
+/// The key a legacy control byte stands for. Letters are ctrl plus the
+/// letter (0x01 is C-a); the five after Esc are ctrl plus punctuation, and
+/// 0x00 is what C-Space and C-@ send.
+fn legacy_ctrl(b: u8) -> char {
+    match b {
+        0x01..=0x1a => (b + 0x60) as char,
+        _ => ctrl_name((b + 0x40) as char),
+    }
+}
+
+/// One name for ctrl+space, however it arrives: legacy 0x00 cannot tell
+/// C-Space from C-@, so both are C-@.
+fn ctrl_name(c: char) -> char {
+    match c {
+        ' ' => '@',
+        c => c,
     }
 }
 
@@ -411,10 +429,11 @@ pub fn parse_key_name(s: &str) -> Option<Key> {
     match s {
         "Esc" | "Escape" => Some(Key::Esc),
         "Space" => Some(Key::Char(' ')),
+        "C-Space" | "c-Space" | "C-space" => Some(Key::Ctrl('@')),
         _ if s.len() >= 3 && (s.starts_with("C-") || s.starts_with("c-")) => {
             let c = s[2..].chars().next()?;
             if s[2..].chars().count() == 1 {
-                Some(Key::Ctrl(c.to_ascii_lowercase()))
+                Some(Key::Ctrl(ctrl_name(c.to_ascii_lowercase())))
             } else {
                 None
             }
@@ -428,6 +447,7 @@ pub fn key_name(k: Key) -> String {
     match k {
         Key::Char(' ') => "Space".into(),
         Key::Char(c) => c.to_string(),
+        Key::Ctrl('@') => "C-Space".into(),
         Key::Ctrl(c) => format!("C-{c}"),
         Key::Esc => "Esc".into(),
     }
@@ -713,6 +733,28 @@ mod tests {
         s.feed(b"\x1b[9");
         s.reset();
         assert_eq!(s.feed(b"x"), vec![Event::Bytes(b"x".to_vec())]);
+    }
+
+    #[test]
+    fn legacy_and_kitty_ctrl_punctuation_agree() {
+        // byte, config name, kitty code
+        for (byte, name, code) in [
+            (0x00u8, "C-Space", 32u32),
+            (0x00, "C-@", 64),
+            (0x1c, "C-\\", 92),
+            (0x1d, "C-]", 93),
+            (0x1e, "C-^", 94),
+            (0x1f, "C-_", 95),
+        ] {
+            let k = parse_key_name(name).unwrap_or_else(|| panic!("{name}"));
+            let mut s = Scanner::new(k);
+            assert_eq!(s.feed(&[byte]), vec![], "{name}: legacy {byte:#x} arms");
+            assert!(s.is_waiting(), "{name}");
+            let mut s = Scanner::new(k);
+            s.feed(format!("\x1b[{code};5u").as_bytes());
+            assert!(s.is_waiting(), "{name}: kitty {code}");
+        }
+        assert_eq!(key_name(parse_key_name("C-Space").unwrap()), "C-Space");
     }
 
     #[test]

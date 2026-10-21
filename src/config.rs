@@ -289,6 +289,13 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_space_is_a_prefix() {
+        let (c, w) = Config::parse("prefix C-Space\n");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.prefix, Key::Ctrl('@'));
+    }
+
+    #[test]
     fn parse_overrides_and_warns() {
         let (c, w) = Config::parse(
             "# comment\nprefix C-b\nbind f run my-picker --flag\nbind 5 jump 2\nunbind x\nbogus 1\nbind zz pick\nbind f2 run\n",

@@ -1,5 +1,5 @@
 # ~/.config/sluice/config — defaults shown; delete lines you do not change.
-# Keys: a single character, C-x for ctrl, Esc, Space.
+# Keys: a single character, C-x for ctrl (C-Space too), Esc, Space.
 prefix C-a
 
 # When the session on screen ends (its shell exited, or it was killed from
