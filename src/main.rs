@@ -180,8 +180,13 @@ fn flag_value(args: &[String], i: usize) -> Result<String, String> {
 }
 
 /// `x+1` is how a user may spell window 1, which zmx, the registry and the
-/// handoff marker all know as `x`.
-fn canonical_window(name: String) -> String {
+/// handoff marker all know as `x`. Unless zmx runs a session literally named
+/// `x+1` (made with zmx itself): then that is the window, and its client
+/// registers under that name.
+fn canonical_window(name: String, live: &[zmx::Session]) -> String {
+    if live.iter().any(|s| s.name == name) {
+        return name;
+    }
     match zmx::is_window_ref(&name) {
         true => {
             let (g, k) = zmx::window_of(&name);
@@ -355,13 +360,13 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
     };
     // A window spelled out (`x+1`, `x+2`) is that window alone, whoever
     // named it.
+    let live = zmx::list();
     let one_window = zmx::is_window_ref(&session);
-    let session = canonical_window(session);
+    let session = canonical_window(session, &live);
     let cmd = match (verb, &target) {
         ("switch", Some(t)) if t == "-" => "prev".to_string(),
         ("switch", Some(t)) => {
             // A session (any of its windows alive) or one explicit window.
-            let live = zmx::list();
             let t = &zmx::typed_name(t, &live);
             let exists = if zmx::is_window_ref(t) {
                 let (g, k) = zmx::window_of(t);
@@ -386,7 +391,6 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
     // bare name there is window 1: only its own pane. `--session` may name a
     // whole session (the picker's ctrl-d), which reaches all its windows.
     let mut targets = vec![session.clone()];
-    let live = zmx::list();
     if explicit && !one_window {
         if let Some(g) = zmx::groups(&live).into_iter().find(|g| g.name == session) {
             for w in g.windows {
@@ -489,7 +493,7 @@ fn handoff_cmd(args: &[String]) -> i32 {
         eprintln!("sluice: handoff: not inside a zmx session and no --session given");
         return 2;
     };
-    let session = canonical_window(session);
+    let session = canonical_window(session, &zmx::list());
     let r = match verb.as_deref() {
         Some("on") => handoff::set(&session, pid),
         Some("off") => handoff::clear(&session),
@@ -737,8 +741,10 @@ mod tests {
         assert_eq!(zmx::typed_name("a.b+1", &live), "a.b+1", "a window of a.b");
         assert_eq!(zmx::typed_name("a.b+3", &live), "a.b+3");
         assert_eq!(zmx::typed_name("c.d+2", &live), "c_d+2");
-        assert_eq!(canonical_window("x+1".into()), "x");
-        assert_eq!(canonical_window("x+2".into()), "x+2");
+        assert_eq!(canonical_window("x+1".into(), &live), "x");
+        assert_eq!(canonical_window("x+2".into(), &live), "x+2");
+        let literal = [s("y+1")];
+        assert_eq!(canonical_window("y+1".into(), &literal), "y+1", "zmx runs that name");
     }
 
     #[test]

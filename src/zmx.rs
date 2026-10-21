@@ -287,11 +287,13 @@ pub fn typed_name(raw: &str, live: &[Session]) -> String {
 /// `.` `:` and spaces and the user's scripts already map those to `_`.
 /// Control characters go too, so names sluice makes draw cleanly. Names
 /// read back from `zmx list` may still hold them: the picker cleans those
-/// where it draws them.
+/// where it draws them. A leading `-` goes too: `sluice detach --session
+/// --x` could not tell such a name from a flag.
 pub fn sanitize_name(raw: &str) -> String {
     raw.chars()
-        .map(|c| {
-            if matches!(c, '/' | '.' | ':' | ',' | ' ') || c.is_control() {
+        .enumerate()
+        .map(|(i, c)| {
+            if matches!(c, '/' | '.' | ':' | ',' | ' ') || c.is_control() || (i == 0 && c == '-') {
                 '_'
             } else {
                 c
@@ -452,6 +454,7 @@ mod tests {
     fn sanitize_matches_tmux_rules() {
         assert_eq!(sanitize_name("glass/feat.x:y z"), "glass_feat_x_y_z");
         assert_eq!(sanitize_name("plain-name"), "plain-name");
+        assert_eq!(sanitize_name("--x"), "_-x", "never read as a flag");
         assert_eq!(sanitize_name("a\tb\x1b[2Jc\0"), "a_b_[2Jc_", "no control bytes");
     }
 }

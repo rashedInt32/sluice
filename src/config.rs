@@ -128,6 +128,9 @@ impl Config {
         let mut sessionizer = None;
         // Keys the file binds itself, as opposed to the defaults.
         let mut bound: Vec<Key> = Vec::new();
+        // The literal binding, set aside while the prefix sits on a key the
+        // file bound: it lands on the next prefix that is free.
+        let mut literal_waiting = false;
         for (lineno, raw) in text.lines().enumerate() {
             let line = strip_comment(raw);
             if line.is_empty() {
@@ -143,9 +146,11 @@ impl Config {
                         // times it moves, unless the file bound the new key.
                         if cfg.binds.get(&cfg.prefix) == Some(&Action::Literal) {
                             cfg.binds.remove(&cfg.prefix);
-                            if !bound.contains(&k) {
-                                cfg.binds.insert(k, Action::Literal);
-                            }
+                            literal_waiting = true;
+                        }
+                        if literal_waiting && !bound.contains(&k) {
+                            cfg.binds.insert(k, Action::Literal);
+                            literal_waiting = false;
                         }
                         cfg.prefix = k;
                     }
@@ -193,6 +198,7 @@ impl Config {
                 "unbind" => match parse_key_name(rest) {
                     Some(k) => {
                         cfg.binds.remove(&k);
+                        bound.retain(|b| *b != k);
                     }
                     None => warnings.push(format!("line {}: bad key `{rest}`", lineno + 1)),
                 },
@@ -312,6 +318,13 @@ mod tests {
         // a default binding does not: prefix,prefix sends the prefix key
         let (c, _) = Config::parse("prefix f\n");
         assert_eq!(c.binds.get(&Key::Char('f')), Some(&Action::Literal));
+        // an unbind makes the key free again
+        let (c, _) = Config::parse("bind C-b detach\nunbind C-b\nprefix C-b\n");
+        assert_eq!(c.binds.get(&Key::Ctrl('b')), Some(&Action::Literal));
+        // across a bound key, literal lands on the next free prefix
+        let (c, _) = Config::parse("bind C-s pick\nprefix C-s\nprefix C-b\n");
+        assert_eq!(c.binds.get(&Key::Ctrl('s')), Some(&Action::Pick));
+        assert_eq!(c.binds.get(&Key::Ctrl('b')), Some(&Action::Literal));
     }
 
     #[test]

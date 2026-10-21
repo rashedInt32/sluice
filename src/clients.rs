@@ -112,19 +112,37 @@ fn register_in(base: &std::path::Path, session: &str, pid: i32) -> Option<Regist
     None
 }
 
-/// Whether a client holds the lock on `path`. Clients lock exclusive and a
-/// probe shared, so two probes at once never take each other for a client.
-fn held(path: &std::path::Path) -> bool {
-    let Ok(f) = std::fs::File::open(path) else {
-        return false;
+#[derive(PartialEq)]
+enum Lock {
+    /// A client holds it.
+    Held,
+    /// Nobody does: the file is stale.
+    Free,
+    /// The probe failed (no flock on this filesystem, say): no telling.
+    Unknown,
+}
+
+/// Who holds the lock on `path`. Clients lock exclusive and a probe shared,
+/// so two probes at once never take each other for a client.
+fn probe(path: &std::path::Path) -> Lock {
+    let f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Lock::Free,
+        Err(_) => return Lock::Unknown,
     };
     if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } == 0 {
-        return false;
+        return Lock::Free;
     }
-    // Only "someone holds it" means a client. Any other failure (a
-    // filesystem without flock) proves nothing, and a pid that is not
-    // provably a client must not get SIGUSR1, which kills by default.
-    std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
+    match std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK) {
+        true => Lock::Held,
+        false => Lock::Unknown,
+    }
+}
+
+/// Only a held lock makes a client: a pid that is not provably one must not
+/// get SIGUSR1, which kills by default.
+fn held(path: &std::path::Path) -> bool {
+    probe(path) == Lock::Held
 }
 
 fn pids_in(base: &std::path::Path, session: &str) -> Vec<i32> {
@@ -142,8 +160,16 @@ fn pids_in(base: &std::path::Path, session: &str) -> Vec<i32> {
             continue; // a registration being made
         }
         match name.parse::<i32>() {
-            Ok(pid) if held(&e.path()) => out.push(pid),
-            _ => {
+            // Only a file proven stale goes: a probe that failed may have
+            // been looking at a live client.
+            Ok(pid) => match probe(&e.path()) {
+                Lock::Held => out.push(pid),
+                Lock::Free => {
+                    let _ = std::fs::remove_file(e.path());
+                }
+                Lock::Unknown => {}
+            },
+            Err(_) => {
                 let _ = std::fs::remove_file(e.path());
             }
         }
@@ -243,7 +269,7 @@ fn sweep_in(base: &std::path::Path) {
             // renamed into place; if this removes one in the instant before,
             // its rename fails and the register retries.
             for f in files.flatten() {
-                if !held(&f.path()) {
+                if probe(&f.path()) == Lock::Free {
                     let _ = std::fs::remove_file(f.path());
                 }
             }
