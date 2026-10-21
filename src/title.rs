@@ -46,17 +46,19 @@ impl Filter {
                     break;
                 }
                 Some(b']') => match osc_len(&data[esc..]) {
-                    Some(len) => {
+                    // An aborted OSC is dropped by the terminal too; what
+                    // aborted it is output again.
+                    Osc::Done(len) | Osc::Aborted(len) => {
                         if !is_title(&data[esc + 2..esc + len]) {
                             out.extend_from_slice(&data[esc..esc + len]);
                         }
                         i = esc + len;
                     }
-                    None if data.len() - esc <= MAX_HELD => {
+                    Osc::Incomplete if data.len() - esc <= MAX_HELD => {
                         self.held = data[esc..].to_vec();
                         break;
                     }
-                    None => {
+                    Osc::Incomplete => {
                         out.extend_from_slice(&data[esc..]);
                         break;
                     }
@@ -82,17 +84,33 @@ fn may_hold_title(buf: &[u8]) -> bool {
     buf.last() == Some(&0x1b) || buf.windows(2).any(|w| w == b"\x1b]")
 }
 
-/// Length of the OSC at `buf[0..2] == ESC ]`, through its BEL or ST.
-fn osc_len(buf: &[u8]) -> Option<usize> {
-    let mut i = 2;
-    while i < buf.len() {
+enum Osc {
+    /// Ends with its BEL or ST; this long.
+    Done(usize),
+    /// Cut off this far in, by CAN, SUB or an ESC that is not ST. A terminal
+    /// abandons the OSC there and reads on from that byte.
+    Aborted(usize),
+    /// The buffer ends inside it.
+    Incomplete,
+}
+
+/// The OSC at `buf[0..2] == ESC ]`.
+fn osc_len(buf: &[u8]) -> Osc {
+    for i in 2..buf.len() {
         match buf[i] {
-            0x07 => return Some(i + 1),
-            0x1b if buf.get(i + 1) == Some(&b'\\') => return Some(i + 2),
-            _ => i += 1,
+            0x07 => return Osc::Done(i + 1),
+            0x18 | 0x1a => return Osc::Aborted(i),
+            0x1b => {
+                return match buf.get(i + 1) {
+                    Some(b'\\') => Osc::Done(i + 2),
+                    Some(_) => Osc::Aborted(i),
+                    None => Osc::Incomplete,
+                }
+            }
+            _ => {}
         }
     }
-    None
+    Osc::Incomplete
 }
 
 /// OSC 0 (icon and title), 1 (icon) and 2 (title). Not 7, the directory,
@@ -107,6 +125,26 @@ mod tests {
 
     fn run(f: &mut Filter, chunks: &[&[u8]]) -> Vec<u8> {
         chunks.iter().flat_map(|c| f.filter(c).into_owned()).collect()
+    }
+
+    #[test]
+    fn an_unterminated_title_ends_where_a_terminal_ends_it() {
+        // A stray `ESC ] 2 ;` used to eat all output until a BEL.
+        let mut f = Filter::default();
+        let got = run(
+            &mut f,
+            &[b"\x1b]2;x", b"\x1b[32m$ \x1b[0mls\r\n", b"file1\r\n", b"\x07"],
+        );
+        assert_eq!(got, b"\x1b[32m$ \x1b[0mls\r\nfile1\r\n\x07".to_vec());
+        // CAN and SUB abort it as well
+        let mut f = Filter::default();
+        assert_eq!(run(&mut f, &[b"\x1b]0;t\x18hello\x07"]), b"\x18hello\x07".to_vec());
+        // a non-title OSC cut off the same way goes through as it came
+        let mut f = Filter::default();
+        assert_eq!(run(&mut f, &[b"\x1b]7;file://h/x\x1b[0m"]), b"\x1b]7;file://h/x\x1b[0m".to_vec());
+        // ST split across reads is still ST
+        let mut f = Filter::default();
+        assert_eq!(run(&mut f, &[b"a\x1b]2;t\x1b", b"\\b"]), b"ab".to_vec());
     }
 
     #[test]
