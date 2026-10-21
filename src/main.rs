@@ -140,7 +140,7 @@ fn real_main(args: &[String]) -> i32 {
     }
 
     let (name, cwd, live) = match parse_attach_args(args) {
-        Ok(Some((name, cwd))) => (name, cwd, live),
+        Ok(Some((name, cwd))) => (session_name(&name, &live), cwd, live),
         // The picker and the sessionizer can take a while, and the picker
         // can kill sessions: list again after them.
         Ok(None) => match pick_or_sessionize(&cfg, &live) {
@@ -170,6 +170,17 @@ fn flag_value(args: &[String], i: usize) -> Result<String, String> {
     match args.get(i + 1) {
         Some(v) if !v.is_empty() && !v.starts_with('-') => Ok(v.clone()),
         _ => Err(format!("{} needs a value", args[i])),
+    }
+}
+
+/// The session a typed name means: one that exists under exactly that name
+/// (zmx itself takes `a.b`), else the name sanitized for a new session.
+fn session_name(raw: &str, live: &[zmx::Session]) -> String {
+    let exists = live.iter().any(|s| s.name == raw)
+        || zmx::groups(live).iter().any(|g| g.name == raw);
+    match exists {
+        true => raw.to_string(),
+        false => zmx::sanitize_name(raw),
     }
 }
 
@@ -319,10 +330,7 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
                     eprintln!("sluice: {verb}: one name only");
                     return 2;
                 }
-                target = Some(match other {
-                    "-" => "-".to_string(),
-                    _ => zmx::sanitize_name(other),
-                });
+                target = Some(other.to_string());
                 i += 1;
             }
         }
@@ -340,6 +348,7 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
         ("switch", Some(t)) => {
             // A session (any of its windows alive) or one explicit window.
             let live = zmx::list();
+            let t = &session_name(t, &live);
             let exists = if zmx::is_window_ref(t) {
                 let (g, k) = zmx::window_of(t);
                 let w = zmx::window_name(g, k);
@@ -561,11 +570,12 @@ fn parse_attach_args(args: &[String]) -> Result<Option<(String, Option<String>)>
                 if name.is_some() {
                     return Err("only one session name".into());
                 }
-                let n = zmx::sanitize_name(s.trim());
-                if n.is_empty() {
+                // Sanitized by the caller, which knows what already exists.
+                let n = s.trim();
+                if zmx::sanitize_name(n).is_empty() {
                     return Err("empty session name".into());
                 }
-                name = Some(n);
+                name = Some(n.to_string());
                 i += 1;
             }
         }
@@ -684,6 +694,22 @@ mod tests {
     }
 
     #[test]
+    fn a_typed_name_keeps_an_existing_session_or_is_sanitized() {
+        let s = |n: &str| zmx::Session {
+            name: n.into(),
+            created: 0,
+            pid: 0,
+            clients: 0,
+            cwd: String::new(),
+            dir: String::new(),
+        };
+        let live = [s("a.b"), s("g"), s("g+2")];
+        assert_eq!(session_name("a.b", &live), "a.b", "zmx made it: keep it");
+        assert_eq!(session_name("c.d", &live), "c_d", "new: sanitized");
+        assert_eq!(session_name("g+2", &live), "g+2");
+    }
+
+    #[test]
     fn attach_args() {
         assert_eq!(parse_attach_args(&v(&[])), Ok(None));
         assert_eq!(parse_attach_args(&v(&["attach"])), Ok(None));
@@ -693,7 +719,7 @@ mod tests {
         );
         assert_eq!(
             parse_attach_args(&v(&["attach", "a.b", "-c", "/tmp"])),
-            Ok(Some(("a_b".into(), Some("/tmp".into()))))
+            Ok(Some(("a.b".into(), Some("/tmp".into()))))
         );
         assert!(parse_attach_args(&v(&["-c"])).is_err());
         assert!(parse_attach_args(&v(&["x", "y"])).is_err());

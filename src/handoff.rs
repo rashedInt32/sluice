@@ -10,7 +10,7 @@ fn dir() -> PathBuf {
 }
 
 fn path_in(dir: &std::path::Path, session: &str) -> PathBuf {
-    dir.join(crate::zmx::sanitize_name(session))
+    dir.join(crate::clients::file_key(session))
 }
 
 pub fn set(session: &str, pid: i32) -> std::io::Result<()> {
@@ -47,20 +47,12 @@ fn active_in(dir: &std::path::Path, session: &str) -> bool {
         let _ = clear_in(dir, session);
         return false;
     };
-    if pid_alive(pid) {
+    if crate::clients::alive(pid) {
         true
     } else {
         let _ = clear_in(dir, session);
         false
     }
-}
-
-fn pid_alive(pid: i32) -> bool {
-    if pid <= 0 {
-        return false;
-    }
-    let r = unsafe { libc::kill(pid, 0) };
-    r == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 #[cfg(test)]

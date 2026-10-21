@@ -11,7 +11,12 @@ struct Pty {
 }
 
 fn spawn(args: &[&str], env: &[(&str, &str)]) -> Pty {
-    let exe = env!("CARGO_BIN_EXE_sluice");
+    spawn_argv(env!("CARGO_BIN_EXE_sluice"), args, env)
+}
+
+/// As `spawn`, for any program: `/bin/sh -c '... exec sluice'` runs sluice
+/// under a pid chosen beforehand.
+fn spawn_argv(exe: &str, args: &[&str], env: &[(&str, &str)]) -> Pty {
     // zmx starts new sessions with $SHELL: a plain sh prompt keeps the tests
     // independent of the user's zsh theme.
     let mut env: Vec<(&str, &str)> = env.to_vec();
@@ -1311,6 +1316,35 @@ fn a_new_window_opens_in_a_directory_with_a_space_in_its_name() {
     p.drain(Duration::from_millis(300));
     p.send(b"echo \"at:$(pwd)\"\r");
     p.expect(&format!("at:{}", dir.display()), Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn a_new_client_ignores_an_inbox_left_under_its_pid() {
+    if !zmx_present() {
+        return;
+    }
+    let mut env = Env::new("inb", "");
+    let a = env.session("inb1");
+    let b = env.session("inb2");
+    env.make(&a);
+    // A dead process with this pid left a detach queued. exec keeps the pid.
+    let script = format!(
+        "d=\"$XDG_STATE_HOME/sluice/inbox/$$\"; mkdir -p \"$d\" && printf detach > \"$d/1-1\" && exec {} {b}",
+        env!("CARGO_BIN_EXE_sluice")
+    );
+    let p = spawn_argv(
+        "/bin/sh",
+        &["-c", &script],
+        &[("XDG_CONFIG_HOME", &env.cfg), ("XDG_STATE_HOME", &env.state)],
+    );
+    p.expect("$", Duration::from_secs(5));
+    p.wait_clients(&b, Some(1), Duration::from_secs(3));
+    let out = sluice_cmd(&["switch", &a, "--session", &b], &env.state);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    p.wait_clients(&a, Some(1), Duration::from_secs(5));
+    assert_eq!(p.wait_exit(Duration::from_millis(300)), None, "the old detach ran");
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }

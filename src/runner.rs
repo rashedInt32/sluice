@@ -38,6 +38,8 @@ pub struct Runner {
     kbd_saved: HashMap<String, KittyState>,
     /// drops the programs' own window titles, with `title on`
     titles: title::Filter,
+    /// this client's entry in the registry, for the window on screen
+    registration: Option<clients::Registration>,
 }
 
 impl Drop for Runner {
@@ -60,6 +62,8 @@ impl Runner {
         live: &[Session],
     ) -> std::io::Result<Runner> {
         clients::sweep();
+        // An inbox under our pid is from a process that had it before us.
+        clients::close_inbox(std::process::id() as i32);
         let sig_fd = sys::signal_pipe()?;
         let raw = RawMode::enter()?;
         let scanner = Scanner::new(cfg.prefix);
@@ -76,6 +80,7 @@ impl Runner {
             kbd: KittyState::default(),
             kbd_saved: HashMap::new(),
             titles: title::Filter::default(),
+            registration: None,
         };
         r.attach(&target, cwd, None)?;
         Ok(r)
@@ -110,7 +115,7 @@ impl Runner {
         if self.cfg.title {
             let _ = sys::write_all(STDOUT, &title::set(zmx::window_of(name).0));
         }
-        clients::register(name, std::process::id() as i32);
+        self.registration = clients::register(name, std::process::id() as i32);
         self.last_window
             .insert(zmx::window_of(name).0.to_string(), name.to_string());
         Ok(())
@@ -130,7 +135,7 @@ impl Runner {
         let _ = sys::write_all(STDOUT, NEUTRAL);
         // Requests still queued stay: a switch detaches too, and a second
         // `sluice switch` sent while the first runs must not be lost.
-        clients::unregister(&self.current, std::process::id() as i32);
+        self.registration = None;
         let state = std::mem::take(&mut self.kbd);
         self.kbd_saved.insert(self.current.clone(), state);
     }
@@ -144,7 +149,7 @@ impl Runner {
         self.scanner.reset();
         self.titles.reset();
         let _ = sys::write_all(STDOUT, NEUTRAL);
-        clients::unregister(&self.current, std::process::id() as i32);
+        self.registration = None;
         let live = zmx::list();
         if live.iter().any(|s| s.name == self.current) || self.cfg.on_end == OnEnd::Close {
             return Flow::Exit(code);

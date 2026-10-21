@@ -1,8 +1,12 @@
 //! Which sluice processes are showing which session, so `sluice detach` from
 //! inside a session can reach the client in front of it. One file per client
-//! pid under `<state>/clients/<session>/`; dead pids are swept on read.
+//! pid under `<state>/clients/<session>/`, flock-ed by that client for as long
+//! as it shows the session. The lock dies with the process, so a stale file
+//! is told apart from a live client even once its pid is reused, which
+//! matters because the client is sent SIGUSR1 and SIGUSR1 kills by default.
 //! Commands for a client queue in `<state>/inbox/<pid>/`.
 
+use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
 pub fn base() -> PathBuf {
@@ -14,9 +18,23 @@ pub fn base() -> PathBuf {
     }
 }
 
+/// A session name as a file name: `%` and `/` escaped, and a leading `.`.
+/// One to one, unlike `sanitize_name`, so `a.b` and `a_b` keep apart.
+pub fn file_key(session: &str) -> String {
+    let mut out = String::with_capacity(session.len());
+    for (i, c) in session.chars().enumerate() {
+        match c {
+            '%' => out.push_str("%25"),
+            '/' => out.push_str("%2F"),
+            '.' if i == 0 => out.push_str("%2E"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn dir(base: &std::path::Path, session: &str) -> PathBuf {
-    base.join("sluice/clients")
-        .join(crate::zmx::sanitize_name(session))
+    base.join("sluice/clients").join(file_key(session))
 }
 
 /// Commands queue in a per-client inbox, one file each, named so they sort in
@@ -28,28 +46,64 @@ fn inbox(base: &std::path::Path, pid: i32) -> PathBuf {
     base.join("sluice/inbox").join(pid.to_string())
 }
 
-pub fn register(session: &str, pid: i32) {
-    register_in(&base(), session, pid)
+/// A client's registration on one session. Holds the lock that marks it
+/// live; dropping it unregisters.
+pub struct Registration {
+    path: PathBuf,
+    _lock: std::fs::File,
 }
 
-pub fn unregister(session: &str, pid: i32) {
-    unregister_in(&base(), session, pid)
-}
-
-fn register_in(base: &std::path::Path, session: &str, pid: i32) {
-    let d = dir(base, session);
-    if std::fs::create_dir_all(&d).is_ok() {
-        let _ = std::fs::write(d.join(pid.to_string()), "");
+/// The session directory stays: removing it here would race another
+/// client registering there. `sweep` clears empty ones at start.
+impl Drop for Registration {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
-fn unregister_in(base: &std::path::Path, session: &str, pid: i32) {
+pub fn register(session: &str, pid: i32) -> Option<Registration> {
+    register_in(&base(), session, pid)
+}
+
+/// Lock a file under a temporary name, then rename it into place: a reader
+/// never sees the file unlocked and takes it for stale. The directory can
+/// vanish under us (`sweep` at another client's start), so retry.
+fn register_in(base: &std::path::Path, session: &str, pid: i32) -> Option<Registration> {
+    if session.is_empty() {
+        return None;
+    }
     let d = dir(base, session);
-    let _ = std::fs::remove_file(d.join(pid.to_string()));
-    let _ = std::fs::remove_dir(&d); // only succeeds when empty
+    let path = d.join(pid.to_string());
+    let tmp = d.join(format!(".{pid}"));
+    for _ in 0..50 {
+        let _ = std::fs::create_dir_all(&d);
+        let Ok(f) = std::fs::File::create(&tmp) else {
+            continue;
+        };
+        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
+            let _ = std::fs::remove_file(&tmp);
+            return None;
+        }
+        if std::fs::rename(&tmp, &path).is_ok() {
+            return Some(Registration { path, _lock: f });
+        }
+    }
+    None
+}
+
+/// Whether a client holds the lock on `path`. Clients lock exclusive and a
+/// probe shared, so two probes at once never take each other for a client.
+fn held(path: &std::path::Path) -> bool {
+    let Ok(f) = std::fs::File::open(path) else {
+        return false;
+    };
+    unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) != 0 }
 }
 
 fn pids_in(base: &std::path::Path, session: &str) -> Vec<i32> {
+    if session.is_empty() {
+        return Vec::new();
+    }
     let d = dir(base, session);
     let Ok(rd) = std::fs::read_dir(&d) else {
         return Vec::new();
@@ -57,8 +111,11 @@ fn pids_in(base: &std::path::Path, session: &str) -> Vec<i32> {
     let mut out = Vec::new();
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') {
+            continue; // a registration being made
+        }
         match name.parse::<i32>() {
-            Ok(pid) if alive(pid) => out.push(pid),
+            Ok(pid) if held(&e.path()) => out.push(pid),
             _ => {
                 let _ = std::fs::remove_file(e.path());
             }
@@ -84,10 +141,10 @@ pub fn close_inbox(pid: i32) {
     let _ = std::fs::remove_dir_all(inbox(&base(), pid));
 }
 
-/// Whether client `pid` is still registered on `session`. A stat, so cheap
-/// enough to poll.
+/// Whether client `pid` is still registered on `session`. An open and a
+/// lock attempt, so cheap enough to poll.
 pub fn showing(session: &str, pid: i32) -> bool {
-    dir(&base(), session).join(pid.to_string()).exists() && alive(pid)
+    held(&dir(&base(), session).join(pid.to_string()))
 }
 
 fn request_in(base: &std::path::Path, session: &str, cmd: &str) -> Vec<i32> {
@@ -143,35 +200,31 @@ fn take_requests_in(base: &std::path::Path, pid: i32) -> Vec<String> {
 
 /// Clear what dead clients left behind: a SIGKILLed client never
 /// unregisters, and a session nobody asks about again is never swept by
-/// `pids_in`. Removes only files named after a dead pid, and only empty
-/// directories, under the two trees sluice owns. Run once per start.
+/// `pids_in`. Removes only registrations nobody holds, inboxes of dead pids,
+/// and empty directories, under the trees sluice owns. Run once per start.
 pub fn sweep() {
     sweep_in(&base())
 }
 
 fn sweep_in(base: &std::path::Path) {
-    // `sluice/cmd` is where sluice kept commands before the inbox.
-    for tree in ["sluice/clients", "sluice/cmd"] {
-        let Ok(sessions) = std::fs::read_dir(base.join(tree)) else {
-            continue;
-        };
+    if let Ok(sessions) = std::fs::read_dir(base.join("sluice/clients")) {
         for d in sessions.flatten() {
             let Ok(files) = std::fs::read_dir(d.path()) else {
                 continue;
             };
+            // A registration still being made is locked before it is
+            // renamed into place; if this removes one in the instant before,
+            // its rename fails and the register retries.
             for f in files.flatten() {
-                let dead = f
-                    .file_name()
-                    .to_str()
-                    .and_then(|n| n.parse::<i32>().ok())
-                    .is_some_and(|pid| !alive(pid));
-                if dead {
+                if !held(&f.path()) {
                     let _ = std::fs::remove_file(f.path());
                 }
             }
             let _ = std::fs::remove_dir(d.path()); // only succeeds when empty
         }
     }
+    // Where sluice kept commands before the inbox.
+    let _ = std::fs::remove_dir_all(base.join("sluice/cmd"));
     let Ok(inboxes) = std::fs::read_dir(base.join("sluice/inbox")) else {
         return;
     };
@@ -187,15 +240,21 @@ fn sweep_in(base: &std::path::Path) {
     }
 }
 
-fn alive(pid: i32) -> bool {
-    pid > 0
-        && (unsafe { libc::kill(pid, 0) } == 0
-            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM))
+/// A process of ours with this pid exists. One we may not signal belongs to
+/// someone else, so it is not ours: EPERM counts as gone.
+pub fn alive(pid: i32) -> bool {
+    pid > 0 && unsafe { libc::kill(pid, 0) } == 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A file left by a client that died without unregistering.
+    fn stale(base: &std::path::Path, session: &str, pid: i32) {
+        std::fs::create_dir_all(dir(base, session)).unwrap();
+        std::fs::write(dir(base, session).join(pid.to_string()), "").unwrap();
+    }
 
     #[test]
     fn a_request_reaches_live_clients_only() {
@@ -205,8 +264,8 @@ mod tests {
         let d = std::env::temp_dir().join(format!("sluice-req-{}", std::process::id()));
         let me = std::process::id() as i32;
         assert!(request_in(&d, "s", "switch other").is_empty(), "nobody attached");
-        register_in(&d, "s", me);
-        register_in(&d, "s", 1_999_999_999);
+        let _r = register_in(&d, "s", me).unwrap();
+        stale(&d, "s", 1_999_999_999);
         assert_eq!(
             request_in(&d, "s", "switch other"),
             vec![me],
@@ -219,16 +278,31 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_registration_under_a_reused_pid_is_not_signalled() {
+        let d = std::env::temp_dir().join(format!("sluice-reuse-{}", std::process::id()));
+        // A live process that is not a sluice client, at the pid a dead
+        // client left behind. SIGUSR1 would kill it.
+        let mut other = std::process::Command::new("sleep").arg("10").spawn().unwrap();
+        stale(&d, "s", other.id() as i32);
+        assert!(request_in(&d, "s", "detach").is_empty());
+        assert!(other.try_wait().unwrap().is_none(), "the bystander lives");
+        assert!(!dir(&d, "s").join(other.id().to_string()).exists(), "and the file goes");
+        other.kill().unwrap();
+        other.wait().unwrap();
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
     fn back_to_back_requests_all_arrive_in_order() {
         unsafe { libc::signal(libc::SIGUSR1, libc::SIG_IGN) };
         let d = std::env::temp_dir().join(format!("sluice-queue-{}", std::process::id()));
         let me = std::process::id() as i32;
-        register_in(&d, "a", me);
+        let r = register_in(&d, "a", me).unwrap();
         request_in(&d, "a", "switch b");
         request_in(&d, "a", "switch c");
         // The client moved on before reading: what was queued is still its.
-        unregister_in(&d, "a", me);
-        register_in(&d, "b", me);
+        drop(r);
+        let _r = register_in(&d, "b", me).unwrap();
         assert_eq!(take_requests_in(&d, me), vec!["switch b", "switch c"]);
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -237,13 +311,14 @@ mod tests {
     fn sweep_clears_dead_clients_and_keeps_live_ones() {
         let d = std::env::temp_dir().join(format!("sluice-sweep-{}", std::process::id()));
         let me = std::process::id() as i32;
-        register_in(&d, "gone", 1_999_999_999);
-        register_in(&d, "here", me);
+        stale(&d, "gone", 1_999_999_999);
+        let _r = register_in(&d, "here", me).unwrap();
         post(&inbox(&d, 1_999_999_999), "1", "detach").unwrap();
         post(&inbox(&d, me), "1", "detach").unwrap();
         std::fs::write(dir(&d, "here").join("notes"), "").unwrap();
         sweep_in(&d);
         assert!(!dir(&d, "gone").exists(), "dead client dir removed");
+        assert!(!dir(&d, "here").join("notes").exists(), "an unlocked stray too");
         assert!(!inbox(&d, 1_999_999_999).exists(), "its stale command too");
         assert!(inbox(&d, me).exists(), "a live client keeps its inbox");
         assert_eq!(pids_in(&d, "here"), vec![me], "a live client stays");
@@ -251,15 +326,47 @@ mod tests {
     }
 
     #[test]
-    fn register_list_unregister_and_sweep() {
+    fn register_list_unregister() {
         let d = std::env::temp_dir().join(format!("sluice-clients-{}", std::process::id()));
         let me = std::process::id() as i32;
-        register_in(&d, "s", me);
-        register_in(&d, "s", 1_999_999_999);
+        let r = register_in(&d, "s", me).unwrap();
+        stale(&d, "s", 1_999_999_999);
         assert_eq!(pids_in(&d, "s"), vec![me], "dead pid swept");
-        unregister_in(&d, "s", me);
+        drop(r);
         assert!(pids_in(&d, "s").is_empty());
-        assert!(!dir(&d, "s").exists(), "empty dir removed");
+        sweep_in(&d);
+        assert!(!dir(&d, "s").exists(), "empty dir swept");
+        assert!(register_in(&d, "", me).is_none(), "no empty session");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn names_that_sanitize_alike_keep_apart() {
+        let d = std::env::temp_dir().join(format!("sluice-key-{}", std::process::id()));
+        let me = std::process::id() as i32;
+        let _r = register_in(&d, "a.b", me).unwrap();
+        assert!(pids_in(&d, "a_b").is_empty());
+        assert_eq!(pids_in(&d, "a.b"), vec![me]);
+        assert_ne!(file_key("a/b"), file_key("a%2Fb"));
+        assert_eq!(file_key(".x"), "%2Ex", "never a dot file");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn two_clients_coming_and_going_never_lose_a_registration() {
+        // Each unregister used to remove the session directory when it looked
+        // empty, under the other client's feet.
+        let d = std::env::temp_dir().join(format!("sluice-race-{}", std::process::id()));
+        let run = |d: std::path::PathBuf, pid: i32| {
+            std::thread::spawn(move || {
+                (0..2000)
+                    .filter(|_| !register_in(&d, "s", pid).is_some_and(|r| r.path.exists()))
+                    .count()
+            })
+        };
+        let me = std::process::id() as i32;
+        let (a, b) = (run(d.clone(), me), run(d.clone(), me + 1));
+        assert_eq!(a.join().unwrap() + b.join().unwrap(), 0, "registrations lost");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
