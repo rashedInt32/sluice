@@ -157,7 +157,7 @@ While the marker is on and its pid is alive, sluice forwards every key untouched
 
 ## Whole sequences only
 
-The scanner consumes complete input sequences. A sequence split across two reads is held until the rest arrives, and anything that is not a key press (a key release report, a focus change, a mouse report) is forwarded intact rather than picked apart. Getting this wrong leaks the tail of an escape sequence into the program as literal text: a release report shredded that way reaches Neovim as `97;5:3u`, whose `:` opens the command line and whose digits land in it.
+The scanner consumes complete input sequences. A sequence split across two reads is held until the rest arrives; if nothing follows within 50 ms it was typed (legacy alt+[ or alt+] send just `ESC [` / `ESC ]`) and goes through as it came. Anything that is not a key press (a key release report, a focus change, a mouse report) is forwarded intact rather than picked apart. Getting this wrong leaks the tail of an escape sequence into the program as literal text: a release report shredded that way reaches Neovim as `97;5:3u`, whose `:` opens the command line and whose digits land in it.
 
 ## Keyboard modes between sessions
 

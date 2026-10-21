@@ -126,11 +126,10 @@ impl Config {
         let mut cfg = Config::defaults();
         let mut warnings = Vec::new();
         let mut sessionizer = None;
-        // Keys the file binds itself, as opposed to the defaults.
+        // Keys the file binds or unbinds itself, as opposed to the
+        // defaults; the last line about a key wins.
         let mut bound: Vec<Key> = Vec::new();
-        // The literal binding, set aside while the prefix sits on a key the
-        // file bound: it lands on the next prefix that is free.
-        let mut literal_waiting = false;
+        let mut unbound: Vec<Key> = Vec::new();
         for (lineno, raw) in text.lines().enumerate() {
             let line = strip_comment(raw);
             if line.is_empty() {
@@ -141,19 +140,7 @@ impl Config {
             let rest = words.next().unwrap_or("").trim();
             match directive {
                 "prefix" => match parse_key_name(rest) {
-                    Some(k) => {
-                        // The literal binding follows the prefix, however many
-                        // times it moves, unless the file bound the new key.
-                        if cfg.binds.get(&cfg.prefix) == Some(&Action::Literal) {
-                            cfg.binds.remove(&cfg.prefix);
-                            literal_waiting = true;
-                        }
-                        if literal_waiting && !bound.contains(&k) {
-                            cfg.binds.insert(k, Action::Literal);
-                            literal_waiting = false;
-                        }
-                        cfg.prefix = k;
-                    }
+                    Some(k) => cfg.prefix = k,
                     None => warnings.push(format!("line {}: bad prefix key `{rest}`", lineno + 1)),
                 },
                 "bind" => {
@@ -170,7 +157,10 @@ impl Config {
                         }
                         Some(a) => {
                             cfg.binds.insert(key, a);
-                            bound.push(key);
+                            unbound.retain(|b| *b != key);
+                            if !bound.contains(&key) {
+                                bound.push(key);
+                            }
                         }
                         None => {
                             warnings.push(format!("line {}: bad action `{action_s}`", lineno + 1))
@@ -199,6 +189,9 @@ impl Config {
                     Some(k) => {
                         cfg.binds.remove(&k);
                         bound.retain(|b| *b != k);
+                        if !unbound.contains(&k) {
+                            unbound.push(k);
+                        }
                     }
                     None => warnings.push(format!("line {}: bad key `{rest}`", lineno + 1)),
                 },
@@ -207,6 +200,19 @@ impl Config {
                     lineno + 1
                 )),
             }
+        }
+        // The default literal binding follows the prefix to wherever the file
+        // leaves it, in whatever order the lines come, unless the file binds
+        // or unbinds that key itself. A literal binding the file wrote stays.
+        let default_prefix = Config::defaults().prefix;
+        if cfg.prefix != default_prefix
+            && !bound.contains(&default_prefix)
+            && cfg.binds.get(&default_prefix) == Some(&Action::Literal)
+        {
+            cfg.binds.remove(&default_prefix);
+        }
+        if !bound.contains(&cfg.prefix) && !unbound.contains(&cfg.prefix) {
+            cfg.binds.insert(cfg.prefix, Action::Literal);
         }
         cfg.sessionizer = sessionizer.or_else(|| match cfg.binds.get(&Key::Char('s')) {
             Some(Action::Run(cmd)) => Some(cmd.clone()),
@@ -318,13 +324,34 @@ mod tests {
         // a default binding does not: prefix,prefix sends the prefix key
         let (c, _) = Config::parse("prefix f\n");
         assert_eq!(c.binds.get(&Key::Char('f')), Some(&Action::Literal));
-        // an unbind makes the key free again
+        // unbinding the prefix key means no literal binding, before or after
         let (c, _) = Config::parse("bind C-b detach\nunbind C-b\nprefix C-b\n");
-        assert_eq!(c.binds.get(&Key::Ctrl('b')), Some(&Action::Literal));
+        assert_eq!(c.binds.get(&Key::Ctrl('b')), None);
+        let (c, _) = Config::parse("unbind C-a\n");
+        assert_eq!(c.binds.get(&Key::Ctrl('a')), None);
         // across a bound key, literal lands on the next free prefix
         let (c, _) = Config::parse("bind C-s pick\nprefix C-s\nprefix C-b\n");
         assert_eq!(c.binds.get(&Key::Ctrl('s')), Some(&Action::Pick));
         assert_eq!(c.binds.get(&Key::Ctrl('b')), Some(&Action::Literal));
+        // the order of the lines does not matter
+        let lit = |text: &str| -> Vec<Key> {
+            let (c, _) = Config::parse(text);
+            let mut v: Vec<Key> = c
+                .binds
+                .iter()
+                .filter(|(_, a)| **a == Action::Literal)
+                .map(|(k, _)| *k)
+                .collect();
+            v.sort_by_key(|k| format!("{k:?}"));
+            v
+        };
+        assert_eq!(lit("prefix C-s\nbind C-s pick\nprefix C-b\n"), vec![Key::Ctrl('b')]);
+        assert_eq!(lit("bind C-s pick\nprefix C-s\nunbind C-s\n"), vec![]);
+        // a literal binding the file wrote stays where it was written
+        assert_eq!(
+            lit("bind C-b literal\nprefix C-b\nprefix C-c\n"),
+            vec![Key::Ctrl('b'), Key::Ctrl('c')]
+        );
     }
 
     #[test]

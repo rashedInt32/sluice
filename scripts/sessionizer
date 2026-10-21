@@ -18,4 +18,6 @@ fi
 # A trailing +<digits> would read as a window of another session: c++17 is
 # window 17 of `c+`. Same rule as sluice's own dir_session_name.
 [[ "$name" =~ ^(.+)\+([0-9]+)$ ]] && name="${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"
+# A leading dash would read as a flag; sluice's own names never start with one.
+name="${name/#-/_}"
 printf '%s\t%s\n' "$name" "$selected"
