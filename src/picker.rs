@@ -204,8 +204,8 @@ fn session_binds_with(exe: &str, current: &str) -> Vec<String> {
         false => format!("{exe} list --rows --current \"$SLUICE_CURRENT\""),
     };
     vec![
-        format!("--bind=ctrl-x:execute-silent({exe} kill {{2}})+reload({reload})"),
-        format!("--bind=ctrl-d:execute-silent({exe} detach --session {{2}})+reload({reload})"),
+        format!("--bind=ctrl-x:execute-silent({exe} kill {{s2}})+reload({reload})"),
+        format!("--bind=ctrl-d:execute-silent({exe} detach --session {{s2}})+reload({reload})"),
         format!("--bind=ctrl-l:reload({reload})"),
     ]
 }
@@ -228,7 +228,7 @@ pub fn pick_session(groups: &[Group], current: &str, hints: &str) -> Option<Stri
         &lines,
         "sessions",
         hints,
-        Some("zmx history {2} --vt"),
+        Some("zmx history {s2} --vt"),
         &extra,
         &[("SLUICE_CURRENT", current)],
     )
@@ -255,7 +255,7 @@ fn fzf_with(
         // `zmx history` is the whole scrollback, oldest first: `follow`
         // shows its end, which is the screen.
         cmd.arg("--preview-window=down,50%,border-rounded,follow");
-        cmd.arg("--bind=focus:transform-preview-label:printf ' %s ' {2}");
+        cmd.arg("--bind=focus:transform-preview-label:printf ' %s ' {s2}");
     }
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -305,6 +305,8 @@ pub fn style_args(label: &str, hints: &str, accent: &str) -> Vec<String> {
         // fzf draws ▌ down the gutter of every row by default
         "--gutter= ",
         "--ghost=i search",
+        // The binds' commands are POSIX sh; $SHELL may be fish or nu.
+        "--with-shell=sh -c",
     ]
     .map(String::from)
     .to_vec();
@@ -468,11 +470,11 @@ mod tests {
     fn session_binds_act_on_the_hidden_name_and_reload() {
         let b = session_binds_with("S", "main").join("\n");
         assert!(
-            b.contains("--bind=ctrl-x:execute-silent(S kill {2})"),
+            b.contains("--bind=ctrl-x:execute-silent(S kill {s2})"),
             "{b}"
         );
         assert!(
-            b.contains("--bind=ctrl-d:execute-silent(S detach --session {2})"),
+            b.contains("--bind=ctrl-d:execute-silent(S detach --session {s2})"),
             "{b}"
         );
         assert!(

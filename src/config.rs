@@ -126,6 +126,8 @@ impl Config {
         let mut cfg = Config::defaults();
         let mut warnings = Vec::new();
         let mut sessionizer = None;
+        // Keys the file binds itself, as opposed to the defaults.
+        let mut bound: Vec<Key> = Vec::new();
         for (lineno, raw) in text.lines().enumerate() {
             let line = strip_comment(raw);
             if line.is_empty() {
@@ -138,10 +140,12 @@ impl Config {
                 "prefix" => match parse_key_name(rest) {
                     Some(k) => {
                         // The literal binding follows the prefix, however many
-                        // times it moves.
+                        // times it moves, unless the file bound the new key.
                         if cfg.binds.get(&cfg.prefix) == Some(&Action::Literal) {
                             cfg.binds.remove(&cfg.prefix);
-                            cfg.binds.insert(k, Action::Literal);
+                            if !bound.contains(&k) {
+                                cfg.binds.insert(k, Action::Literal);
+                            }
                         }
                         cfg.prefix = k;
                     }
@@ -161,6 +165,7 @@ impl Config {
                         }
                         Some(a) => {
                             cfg.binds.insert(key, a);
+                            bound.push(key);
                         }
                         None => {
                             warnings.push(format!("line {}: bad action `{action_s}`", lineno + 1))
@@ -301,6 +306,12 @@ mod tests {
         assert_eq!(c.prefix, Key::Ctrl('s'));
         assert_eq!(c.binds.get(&Key::Ctrl('s')), Some(&Action::Literal));
         assert_eq!(c.binds.get(&Key::Ctrl('b')), None);
+        // a key bound on purpose keeps its binding when it becomes the prefix
+        let (c, _) = Config::parse("bind C-b detach\nprefix C-b\n");
+        assert_eq!(c.binds.get(&Key::Ctrl('b')), Some(&Action::Detach));
+        // a default binding does not: prefix,prefix sends the prefix key
+        let (c, _) = Config::parse("prefix f\n");
+        assert_eq!(c.binds.get(&Key::Char('f')), Some(&Action::Literal));
     }
 
     #[test]
@@ -387,10 +398,9 @@ fn strip_comment(raw: &str) -> &str {
     }
     // `bind # ...` and `unbind #`: there `#` is the key, not a comment.
     let mut from = 1;
-    for verb in ["bind # ", "unbind # "] {
-        if t.starts_with(verb) || t == verb.trim_end() {
-            from = verb.len();
-        }
+    let mut words = t.split_whitespace();
+    if matches!(words.next(), Some("bind" | "unbind")) && words.next() == Some("#") {
+        from = t.find('#').map_or(1, |i| i + 1);
     }
     let bytes = t.as_bytes();
     for i in from..bytes.len() {
@@ -424,6 +434,13 @@ mod comment_tests {
         let (c, w) = Config::parse("bind # pick\nunbind #\n");
         assert!(w.is_empty(), "{w:?}");
         assert!(!c.binds.contains_key(&Key::Char('#')));
+        for line in ["bind\t# pick", "bind  # pick", "bind #\tpick # note"] {
+            let (c, w) = Config::parse(line);
+            assert!(w.is_empty(), "{line:?}: {w:?}");
+            assert_eq!(c.binds[&Key::Char('#')], Action::Pick, "{line:?}");
+        }
+        let (c, w) = Config::parse("bind # pick\nunbind\t#\n");
+        assert!(w.is_empty() && !c.binds.contains_key(&Key::Char('#')));
     }
 
     #[test]

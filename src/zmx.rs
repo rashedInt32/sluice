@@ -60,7 +60,6 @@ fn parse_line(line: &str) -> Option<Session> {
         let Some((k, v)) = field.split_once('=') else {
             continue;
         };
-        let v = v.trim_end_matches('\r');
         if seen.contains(&k) {
             continue;
         }

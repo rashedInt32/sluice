@@ -48,9 +48,9 @@ eval "style=($style_words)"
 sel="$(fzf </dev/null "${style[@]}" \
   --bind="start:reload('$DIR/agents')" \
   --delimiter=$'\t' --with-nth='5..' \
-  --preview='zmx history {2} --vt' \
+  --preview='zmx history {s2} --vt' \
   --preview-window='down,50%,border-rounded,follow' \
-  --bind="focus:transform-preview-label:printf ' %s ' {2}" \
+  --bind="focus:transform-preview-label:printf ' %s ' {s2}" \
   --bind="ctrl-x:execute-silent(kill {3})+reload(sleep 0.4; '$DIR/claude-picker' --list)" \
   --bind="ctrl-l:reload('$DIR/claude-picker' --list)")"
 
