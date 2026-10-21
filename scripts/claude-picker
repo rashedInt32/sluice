@@ -45,7 +45,9 @@ style_words="$("${SLUICE:-sluice}" picker-style --preview --label '✻ agents' -
 }
 # Every word arrives shell-quoted by sluice, so eval only rebuilds the array.
 eval "style=($style_words)"
-sel="$(fzf </dev/null "${style[@]}" \
+# Under sluice ($SLUICE set) the picker stays drawn when fzf exits, and
+# sluice swaps it for the session in one frame.
+sel="$(fzf </dev/null "${style[@]}" ${SLUICE:+--no-clear} \
   --bind="start:reload('$DIR/agents')" \
   --delimiter=$'\t' --with-nth='5..' \
   --preview='zmx history {s2} --vt' \
@@ -57,6 +59,8 @@ sel="$(fzf </dev/null "${style[@]}" \
 # the empty case is worth a word, and it is cheap to check once, afterwards.
 if [ -z "$sel" ]; then
   if [ -z "$("$DIR/agents")" ]; then
+    # off the picker's frame, so the message is not drawn over it
+    [ -n "${SLUICE:-}" ] && printf '\033[?1049l' >/dev/tty
     echo "claude-picker: no Claude agents are running in a zmx session" >&2
     sleep 1.2
   fi

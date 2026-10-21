@@ -25,6 +25,13 @@ const BUF: usize = 64 * 1024;
 /// the next typed key takes tens of milliseconds.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// A switch's synchronized update ends once the new window's output has
+/// been quiet this long: zmx sends its repaint in one burst.
+const SYNC_QUIET: std::time::Duration = std::time::Duration::from_millis(15);
+/// and in any case this long after it opened, so a window that never goes
+/// quiet, or never draws, cannot hold the screen.
+const SYNC_CAP: std::time::Duration = std::time::Duration::from_millis(250);
+
 pub struct Runner {
     cfg: Config,
     raw: RawMode,
@@ -50,10 +57,14 @@ pub struct Runner {
     last_input: std::time::Instant,
     /// how many times a window was attached; the first is the one asked for
     attaches: u32,
+    /// a synchronized update held open over a switch: when it opened, and
+    /// when the new window's output last came. See `open_sync`.
+    sync: Option<(std::time::Instant, Option<std::time::Instant>)>,
 }
 
 impl Drop for Runner {
     fn drop(&mut self) {
+        self.close_sync();
         clients::close_inbox(std::process::id() as i32);
     }
 }
@@ -113,6 +124,7 @@ impl Runner {
             registration: None,
             attaches: 0,
             last_input: std::time::Instant::now(),
+            sync: None,
         };
         r.attach(&target, cwd, cmd)?;
         Ok(r)
@@ -130,6 +142,7 @@ impl Runner {
         cwd: Option<&str>,
         cmd: Option<&[String]>,
     ) -> std::io::Result<()> {
+        self.open_sync();
         self.kbd = self.kbd_saved.remove(name).unwrap_or_default();
         let restore = self.kbd.restore();
         if !restore.is_empty() {
@@ -165,6 +178,10 @@ impl Runner {
             sys::hangup_and_wait(c.pid, std::time::Duration::from_millis(500), self.sig_fd);
             sys::close(c.master);
         }
+        // NEUTRAL flips to the alternate screen and back; held, so the
+        // flip and the next window's repaint are one frame. Leaving sluice
+        // closes it.
+        self.open_sync();
         let _ = sys::write_all(STDOUT, NEUTRAL);
         // Requests still queued stay: a switch detaches too, and a second
         // `sluice switch` sent while the first runs must not be lost.
@@ -182,6 +199,7 @@ impl Runner {
     fn after_child_exit(&mut self, code: i32) -> Flow {
         self.scanner.reset();
         self.titles.reset();
+        self.open_sync();
         let _ = sys::write_all(STDOUT, NEUTRAL);
         self.registration = None;
         let live = zmx::list();
@@ -195,6 +213,7 @@ impl Runner {
             if self.attaches == 1 {
                 return Flow::Exit(1);
             }
+            self.close_sync();
             let msg = format!("\r\nsluice: zmx did not open `{name}`. Press a key.\r\n");
             let _ = sys::write_all(STDOUT, msg.as_bytes());
             if let Flow::Exit(c) = self.wait_for_key() {
@@ -283,6 +302,35 @@ impl Runner {
     /// the fresh shell that takes its name.
     fn prune(&mut self, live: &[Session]) {
         Self::prune_maps(&mut self.kbd_saved, &mut self.last_window, live);
+    }
+
+    /// Hold the terminal's drawing until the window being attached has
+    /// repainted. zmx clears the screen, homes the cursor and redraws;
+    /// drawn as it comes, that shows a blank screen with the cursor in the
+    /// corner, or the window we left, for a frame or two. Held, the old
+    /// screen turns into the new one in one frame. Ended by the run loop.
+    fn open_sync(&mut self) {
+        if self.sync.is_none() {
+            let _ = sys::write_all(STDOUT, picker::SYNC_BEGIN);
+            self.sync = Some((std::time::Instant::now(), None));
+        }
+    }
+
+    fn close_sync(&mut self) {
+        if self.sync.take().is_some() {
+            let _ = sys::write_all(STDOUT, picker::SYNC_END);
+        }
+    }
+
+    /// When the open update must end: quiet after output, else the cap.
+    fn sync_due(&self) -> Option<std::time::Instant> {
+        self.sync.map(|(opened, last)| {
+            let cap = opened + SYNC_CAP;
+            match last {
+                Some(t) => (t + SYNC_QUIET).min(cap),
+                None => cap,
+            }
+        })
     }
 
     // ------------------------------------------------------------ pure helpers
@@ -400,17 +448,31 @@ impl Runner {
             // terminal, however busy the session's output keeps the loop,
             // and only once the poll shows no more input waiting: a loop
             // stalled past SETTLE (a slow terminal) may have its rest unread.
-            let timeout = match self.scanner.has_pending() {
+            let mut timeout = match self.scanner.has_pending() {
                 false => -1,
                 true => {
                     let left = SETTLE.saturating_sub(self.last_input.elapsed());
                     left.as_micros().div_ceil(1000) as i32
                 }
             };
+            if let Some(due) = self.sync_due() {
+                let left = due.saturating_duration_since(std::time::Instant::now());
+                let ms = left.as_micros().div_ceil(1000) as i32;
+                timeout = if timeout < 0 { ms } else { timeout.min(ms) };
+            }
             let ready = match sys::poll_readable([STDIN, master, self.sig_fd], timeout) {
                 Ok(m) => m,
                 Err(_) => return 1,
             };
+            // The repaint is in once output has gone quiet; the cap ends it
+            // even while output keeps coming.
+            if let Some(due) = self.sync_due() {
+                let now = std::time::Instant::now();
+                let capped = self.sync.is_some_and(|(o, _)| now >= o + SYNC_CAP);
+                if capped || (ready & 0b010 == 0 && now >= due) {
+                    self.close_sync();
+                }
+            }
             if self.scanner.has_pending()
                 && ready & 0b001 == 0
                 && self.last_input.elapsed() >= SETTLE
@@ -455,6 +517,9 @@ impl Runner {
                         if sys::write_all(STDOUT, &out).is_err() {
                             self.detach();
                             return 1;
+                        }
+                        if let Some((_, last)) = &mut self.sync {
+                            *last = Some(std::time::Instant::now());
                         }
                     }
                 }
@@ -636,7 +701,7 @@ impl Runner {
             }
             Action::Pick => {
                 let current = self.current.clone();
-                let choice = self.with_tty(|| {
+                let choice = self.with_tty(true, || {
                     let live = zmx::list();
                     if live.is_empty() {
                         return None;
@@ -648,14 +713,14 @@ impl Runner {
             }
             Action::PickWindow => {
                 let current = self.current.clone();
-                let pick = self.with_tty(|| {
+                let pick = self.with_tty(true, || {
                     let header = "j/k move · 1-9 jump · enter switch · ctrl-x kill · i search · q back";
                     picker::pick_window(&zmx::list(), &current, header)
                 });
                 self.finish_window(pick)
             }
             Action::Run(cmd) => {
-                let choice = self.with_tty(|| picker::run_script(&cmd));
+                let choice = self.with_tty(false, || picker::run_script(&cmd));
                 self.finish_switch(choice)
             }
             Action::Help => {
@@ -665,7 +730,7 @@ impl Runner {
                     .into_iter()
                     .map(|l| format!("{l}\t"))
                     .collect();
-                let _ = self.with_tty(|| {
+                let _ = self.with_tty(true, || {
                     picker::fzf(&lines, "prefix bindings", "q/esc back", None)
                 });
                 self.finish_switch(None)
@@ -682,7 +747,7 @@ impl Runner {
                     format!("yes, kill window `{name}`\tyes"),
                 ];
                 let confirmed =
-                    self.with_tty(|| picker::fzf(&lines, "kill?", "", None)) == Some("yes".into());
+                    self.with_tty(true, || picker::fzf(&lines, "kill?", "", None)) == Some("yes".into());
                 if !confirmed {
                     return self.finish_switch(None);
                 }
@@ -696,10 +761,30 @@ impl Runner {
 
     /// Detach, give the tty back in cooked mode, run `f`, take the tty again.
     /// The caller must reattach afterwards.
-    fn with_tty<T>(&mut self, f: impl FnOnce() -> T) -> T {
+    /// The picker's last frame stays up until the window after it has
+    /// repainted: see `picker::LEAVE_PICKER`. A script that cleared its own
+    /// screen leaves the same way; leaving the main screen only restores the
+    /// cursor, which the repaint places anyway.
+    ///
+    /// `held`: `f` runs our own fzf, which ends the synchronized update with
+    /// its first frame, so the update stays open until then and nothing in
+    /// between is drawn: not the main screen NEUTRAL leaves the terminal on,
+    /// which under nvim is the shell from before it. A `run` script may not
+    /// draw at all, and the terminal would wait a second on its own before
+    /// giving up on the update, so it gets the screen as it is.
+    fn with_tty<T>(&mut self, held: bool, f: impl FnOnce() -> T) -> T {
         self.detach();
+        if held {
+            // never reset by fzf if it does not start; the terminal's own
+            // timeout would end it, a second late
+            self.sync = None;
+        } else {
+            self.close_sync();
+        }
         self.raw.suspend();
         let out = f();
+        self.open_sync();
+        let _ = sys::write_all(STDOUT, picker::LEAVE_PICKER);
         self.raw.resume();
         // Out of raw mode, ctrl+c and ctrl+\ signal the whole foreground
         // group, sluice with the script. They were meant for the script.
@@ -804,6 +889,7 @@ impl Runner {
         match self.attach(name, cwd, cmd) {
             Ok(()) => Flow::Continue,
             Err(e) => {
+                self.close_sync();
                 let _ = sys::write_all(
                     STDOUT,
                     format!("\r\nsluice: cannot start zmx: {e}\r\n").as_bytes(),

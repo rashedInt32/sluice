@@ -3,8 +3,10 @@
 # Same list and fzf feel as tmux-sessionizer; only the last lines differ.
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
+# Under sluice ($SLUICE set) the picker stays drawn when fzf exits, and
+# sluice swaps it for the session in one frame. Run by hand, fzf clears up.
 selected=$("$here/project-dirs" \
-  | fzf --with-nth=1 --delimiter="\t" --ansi --prompt='project > ' \
+  | fzf --with-nth=1 --delimiter="\t" --ansi --prompt='project > ' ${SLUICE:+--no-clear} \
   | cut -d$'\t' -f2 | sed 's/[[:space:]]*$//')
 
 [[ -z "$selected" || ! -d "$selected" ]] && exit 1

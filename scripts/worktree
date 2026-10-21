@@ -34,14 +34,20 @@ branch_rows=$(git -C "$repo_root" for-each-ref --format='%(refname:short)' refs/
 
 list=$(printf '%s\n%s\n' "$wt_rows" "$branch_rows" | sed '/^$/d')
 
+# Under sluice ($SLUICE set) the picker stays drawn when fzf exits, and
+# sluice swaps it for the session in one frame. An error leaves it first.
 sel=$(printf '%s\n' "$list" \
-  | fzf --with-nth=1 --delimiter=$'\t' --print-query \
+  | fzf --with-nth=1 --delimiter=$'\t' --print-query ${SLUICE:+--no-clear} \
         --prompt='worktree > ' \
         --header='● switch · + create worktree for branch · type a new name = new branch')
 
 query=$(printf '%s\n' "$sel" | sed -n '1p')
 match=$(printf '%s\n' "$sel" | sed -n '2p')
 err=$(mktemp)
+fail() {
+  [ -n "${SLUICE:-}" ] && printf '\033[?1049l' >/dev/tty
+  echo "failed to create worktree:" >&2; cat "$err" >&2; sleep 2.5; exit 1
+}
 
 if [[ -n "$match" ]]; then
   branch=$(printf '%s' "$match" | cut -f2)
@@ -49,8 +55,7 @@ if [[ -n "$match" ]]; then
   if [[ -z "$path" ]]; then
     path="$wt_base/$branch"
     if [[ ! -d "$path" ]]; then
-      git -C "$repo_root" worktree add "$path" "$branch" 2>"$err" \
-        || { echo "failed to create worktree:" >&2; cat "$err" >&2; sleep 2.5; exit 1; }
+      git -C "$repo_root" worktree add "$path" "$branch" 2>"$err" || fail
     fi
   fi
 else
@@ -58,8 +63,7 @@ else
   [[ -z "$branch" ]] && exit 1
   path="$wt_base/$branch"
   if ! git -C "$repo_root" worktree add "$path" -b "$branch" 2>"$err"; then
-    git -C "$repo_root" worktree add "$path" "$branch" 2>>"$err" \
-      || { echo "failed to create worktree:" >&2; cat "$err" >&2; sleep 2.5; exit 1; }
+    git -C "$repo_root" worktree add "$path" "$branch" 2>>"$err" || fail
   fi
 fi
 rm -f "$err"

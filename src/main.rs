@@ -152,6 +152,10 @@ fn real_main(args: &[String]) -> i32 {
         // name a command for the new session, as a bound script's does.
         Ok(None) => match pick_or_sessionize(&cfg, &live) {
             Some(c) => {
+                // Off the picker inside one update, which the first attach
+                // holds open until the session has drawn.
+                let _ = sys::write_all(sys::STDOUT, picker::SYNC_BEGIN);
+                let _ = sys::write_all(sys::STDOUT, picker::LEAVE_PICKER);
                 let live = zmx::list();
                 (zmx::typed_name(&c.name, &live), c.cwd, c.cmd, live)
             }
@@ -167,6 +171,7 @@ fn real_main(args: &[String]) -> i32 {
     match runner::Runner::start(cfg, &name, cwd.as_deref(), cmd.as_deref(), &live) {
         Ok(r) => r.run(),
         Err(e) => {
+            let _ = sys::write_all(sys::STDOUT, picker::SYNC_END);
             eprintln!("sluice: {e}");
             1
         }
@@ -642,14 +647,24 @@ fn parse_attach_args(args: &[String]) -> Result<Option<(String, Option<String>)>
 
 /// No name given: fzf over live sessions; with none (or on cancel) fall through
 /// to the sessionizer so a fresh terminal can start a project directly.
+///
+/// A choice comes back with the picker still on screen, for the caller to
+/// leave; with none, the screen is back as it was.
 fn pick_or_sessionize(cfg: &Config, live: &[zmx::Session]) -> Option<picker::Choice> {
+    let leave = || sys::write_all(sys::STDOUT, picker::LEAVE_PICKER);
     if !live.is_empty() {
         let header = "j/k move · 1-9 jump · enter attach · ctrl-x kill · ctrl-d detach · i search · q new project";
         if let Some(name) = picker::pick_session(live, "", header) {
             return Some(picker::Choice::named(name));
         }
+        let _ = leave();
     }
-    picker::run_script(cfg.sessionizer.as_deref()?)
+    let choice = picker::run_script(cfg.sessionizer.as_deref()?);
+    if choice.is_none() {
+        // the bundled sessionizer keeps its frame too, under sluice
+        let _ = leave();
+    }
+    choice
 }
 
 #[cfg(test)]

@@ -440,6 +440,19 @@ fn window_binds_with(exe: &str) -> Vec<String> {
     ]
 }
 
+/// Begin a synchronized update (DEC mode 2026): the terminal draws nothing
+/// until `SYNC_END`, then shows the result as one frame. Terminals without
+/// it ignore both.
+pub const SYNC_BEGIN: &[u8] = b"\x1b[?2026h";
+pub const SYNC_END: &[u8] = b"\x1b[?2026l";
+
+/// Back from the alternate screen a picker drew on. Our fzf runs with
+/// `--no-clear` and stays on its last frame when it exits, so the screen
+/// under it, the window we left, is never shown on the way to the next
+/// one: the caller leaves it inside a synchronized update, and the next
+/// window's repaint lands in the same frame.
+pub const LEAVE_PICKER: &[u8] = b"\x1b[?1049l";
+
 /// As `fzf`, plus extra arguments, and variables for fzf and its binds.
 fn fzf_with(
     lines: &[String],
@@ -451,7 +464,7 @@ fn fzf_with(
 ) -> Option<String> {
     let mut cmd = Command::new("fzf");
     cmd.envs(vars.iter().copied());
-    cmd.args(["--delimiter=\t", "--with-nth=1", "--nth=1"]);
+    cmd.args(["--delimiter=\t", "--with-nth=1", "--nth=1", "--no-clear"]);
     cmd.args(style_args(label, hints, ORANGE));
     cmd.args(extra);
     if let Some(p) = preview {
@@ -466,7 +479,9 @@ fn fzf_with(
         Ok(c) => c,
         Err(e) => {
             // The tty is ours and cooked here: say why nothing opens, and
-            // keep it on screen until it is read.
+            // keep it on screen until it is read. The update held open for
+            // fzf's first frame ends here instead.
+            let _ = crate::sys::write_all(crate::sys::STDOUT, SYNC_END);
             eprint!("sluice: cannot run fzf ({e}); the pickers need it. Press Enter.");
             let _ = std::io::stdin().read_line(&mut String::new());
             return None;
