@@ -136,7 +136,8 @@ impl Runner {
         // Requests still queued stay: a switch detaches too, and a second
         // `sluice switch` sent while the first runs must not be lost.
         self.registration = None;
-        let state = std::mem::take(&mut self.kbd);
+        let mut state = std::mem::take(&mut self.kbd);
+        state.cut();
         self.kbd_saved.insert(self.current.clone(), state);
     }
 

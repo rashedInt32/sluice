@@ -22,6 +22,8 @@ pub struct KittyState {
     main: Vec<u32>,
     alt: Vec<u32>,
     on_alt: bool,
+    /// The start of a sequence the last read cut off.
+    held: Vec<u8>,
 }
 
 impl Default for KittyState {
@@ -30,6 +32,7 @@ impl Default for KittyState {
             main: vec![0],
             alt: vec![0],
             on_alt: false,
+            held: Vec::new(),
         }
     }
 }
@@ -59,21 +62,44 @@ impl KittyState {
 
     /// Scan forwarded output for kitty push/pop/set, screen switches and resets.
     pub fn feed(&mut self, buf: &[u8]) {
+        if self.held.is_empty() {
+            self.scan(buf);
+        } else {
+            let mut d = std::mem::take(&mut self.held);
+            d.extend_from_slice(buf);
+            self.scan(&d);
+        }
+    }
+
+    /// The output stream ended (the window was detached): a held fragment
+    /// would be glued onto another stream's output.
+    pub fn cut(&mut self) {
+        self.held.clear();
+    }
+
+    fn scan(&mut self, buf: &[u8]) {
         let mut i = 0;
         while let Some(off) = memchr(0x1b, &buf[i..]) {
             let esc = i + off;
             i = esc + 1;
             match buf.get(esc + 1) {
+                None => self.held = vec![0x1b],
                 Some(b'c') => {
                     *self = KittyState::default();
                     i = esc + 2;
                 }
-                Some(b'[') => {
-                    if let Some(len) = csi_len(&buf[esc..]) {
+                Some(b'[') => match csi_len(&buf[esc..]) {
+                    Csi::Done(len) => {
                         self.csi(&buf[esc + 2..esc + len - 1], buf[esc + len - 1]);
                         i = esc + len;
                     }
-                }
+                    Csi::Incomplete => {
+                        self.held = buf[esc..].to_vec();
+                        return;
+                    }
+                    // Scanning goes on from the next ESC.
+                    Csi::Broken => {}
+                },
                 _ => {}
             }
         }
@@ -103,7 +129,9 @@ impl KittyState {
                 Some(b'<') => {
                     let n = num(&body[1..]).unwrap_or(1).max(1) as usize;
                     let st = self.stack();
-                    for _ in 0..n {
+                    // Popping past the base only zeroes it again, so any
+                    // count over the depth is the same as the depth.
+                    for _ in 0..n.min(st.len()) {
                         if st.len() > 1 {
                             st.pop();
                         } else {
@@ -148,17 +176,26 @@ fn num(b: &[u8]) -> Option<u32> {
     std::str::from_utf8(b).ok()?.parse().ok()
 }
 
-/// Length of the CSI sequence at buf[0] == ESC, buf[1] == '[', if complete.
-fn csi_len(buf: &[u8]) -> Option<usize> {
+enum Csi {
+    /// The sequence at buf[0] is this long.
+    Done(usize),
+    /// The buffer ends inside it.
+    Incomplete,
+    /// Cut short by an ESC, or too long to be one: a terminal drops it.
+    Broken,
+}
+
+/// The CSI sequence at buf[0] == ESC, buf[1] == '['.
+fn csi_len(buf: &[u8]) -> Csi {
     for (i, &b) in buf.iter().enumerate().skip(2) {
-        if (0x40..=0x7e).contains(&b) {
-            return Some(i + 1);
+        if b == 0x1b || i > 64 {
+            return Csi::Broken;
         }
-        if i > 64 {
-            return None;
+        if (0x40..=0x7e).contains(&b) {
+            return Csi::Done(i + 1);
         }
     }
-    None
+    Csi::Incomplete
 }
 
 /// First `needle` in `hay`. Runs over all output, so it tests eight bytes at
@@ -206,6 +243,37 @@ mod tests {
         }
         assert_eq!(memchr(0x1b, b"\x1b\x1b"), Some(0));
         assert_eq!(memchr(0x1b, b""), None);
+    }
+
+    #[test]
+    fn a_huge_pop_count_costs_no_more_than_the_depth() {
+        let mut k = KittyState::default();
+        k.feed(b"\x1b[>1u\x1b[>3u");
+        let t = std::time::Instant::now();
+        k.feed(b"\x1b[<999999999u");
+        assert!(t.elapsed() < std::time::Duration::from_millis(5), "{:?}", t.elapsed());
+        assert_eq!(k.flags(), (0, 0));
+    }
+
+    #[test]
+    fn a_sequence_split_across_reads_still_counts() {
+        let out = b"text\x1b[?1049h\x1b[>5u more\x1b[?1049l\x1b[>1u\x1b[=3;2u end";
+        let mut whole = KittyState::default();
+        whole.feed(out);
+        assert_eq!(whole.flags(), (3, 5));
+        for k in 1..out.len() {
+            let mut s = KittyState::default();
+            s.feed(&out[..k]);
+            s.feed(&out[k..]);
+            assert_eq!(s.flags(), whole.flags(), "split at {k}");
+        }
+    }
+
+    #[test]
+    fn an_esc_ends_a_broken_csi_so_the_next_one_counts() {
+        let mut k = KittyState::default();
+        k.feed(b"\x1b[\x1b[>1u");
+        assert_eq!(k.flags(), (1, 0));
     }
 
     #[test]
@@ -279,16 +347,6 @@ mod tests {
         k.feed(b"\x1b[>7u\x1bc");
         assert_eq!(k.flags(), (0, 0));
         assert!(!k.on_alt);
-    }
-
-    #[test]
-    fn sequence_split_across_chunks_is_simply_missed_not_misread() {
-        let mut k = KittyState::default();
-        k.feed(b"\x1b[>");
-        k.feed(b"1u");
-        assert_eq!(k.flags(), (0, 0));
-        k.feed(b"\x1b[>1u");
-        assert_eq!(k.flags(), (1, 0));
     }
 
     #[test]
