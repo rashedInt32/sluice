@@ -195,12 +195,14 @@ impl Scanner {
                         self.pending = rest.to_vec();
                         return out;
                     }
-                    // Not a sequence after all. Typed, ESC and the byte after
-                    // it are one alt key, which goes through whole, as alt+x
-                    // does, and never stands in for an armed chord key.
-                    // Otherwise let one byte through and resync.
+                    // Not a sequence after all. ESC and one byte, typed, are
+                    // an alt key, which goes through whole, as alt+x does,
+                    // and never stands in for an armed chord key. Anything
+                    // longer may be a real sequence cut for good: let one
+                    // byte through and resync, so its digits are not taken
+                    // for a chord key either (`ESC[2` must not jump to 2).
                     i += match (settled, rest) {
-                        (true, [0x1b, _, ..]) => 2,
+                        (true, [0x1b, _]) => 2,
                         _ => 1,
                     };
                 }
@@ -631,6 +633,15 @@ mod tests {
         assert_eq!(s.settle(|| false), vec![]);
         assert_eq!(s.feed(b"~"), vec![Event::Bytes(b"\x1b[201~".to_vec())]);
         assert!(matches!(s.feed(b"\x01d")[..], [Event::Chord { key: Key::Char('d'), .. }]));
+        // armed, and a real sequence cut for good: its digit is no chord
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"\x01");
+        s.feed(b"\x1b[2");
+        let ev = s.settle(|| false);
+        assert!(
+            !ev.iter().any(|e| matches!(e, Event::Chord { key: Key::Char('2'), .. })),
+            "{ev:?}"
+        );
         // armed, then alt+] typed: through whole, and the prefix stays armed
         for alt in [&b"\x1b]"[..], b"\x1b[", b"\x1bO"] {
             let mut s = Scanner::new(Key::Ctrl('a'));

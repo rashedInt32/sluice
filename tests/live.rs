@@ -1673,3 +1673,60 @@ fn a_held_alt_key_settles_while_the_session_prints() {
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }
+
+/// Kitty ctrl+a cut after `ESC[9`, its rest 20 ms later, then `d`. With
+/// `block`, the test stops reading sluice's output around the cut, so
+/// sluice's own write blocks for ~200 ms while the rest waits on its stdin.
+fn cut_prefix_detaches(tag: &str, block: bool) -> Option<i32> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    let mut env = Env::new(tag, "");
+    let a = env.session(tag);
+    let p = env.spawn(&[&a]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"yes\r");
+    let fd = p.master;
+    let draining = Arc::new(AtomicBool::new(true));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (d, s) = (draining.clone(), stop.clone());
+    let t = std::thread::spawn(move || {
+        let mut buf = [0u8; 65536];
+        while !s.load(Ordering::SeqCst) {
+            if !d.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+                continue;
+            }
+            let mut pf = libc::pollfd {
+                fd,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut pf, 1, 5) } > 0 {
+                unsafe { libc::read(fd, buf.as_mut_ptr() as *mut _, buf.len()) };
+            }
+        }
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    p.send(b"\x1b[9");
+    std::thread::sleep(Duration::from_millis(5));
+    if block {
+        draining.store(false, Ordering::SeqCst);
+    }
+    std::thread::sleep(Duration::from_millis(15));
+    p.send(b"7;5ud");
+    std::thread::sleep(Duration::from_millis(200));
+    draining.store(true, Ordering::SeqCst);
+    std::thread::sleep(Duration::from_millis(300));
+    stop.store(true, Ordering::SeqCst);
+    t.join().unwrap();
+    p.wait_exit(Duration::from_secs(3))
+}
+
+#[test]
+fn a_cut_sequence_is_not_settled_while_its_rest_waits_unread() {
+    if !zmx_present() {
+        return;
+    }
+    assert_eq!(cut_prefix_detaches("cuq", false), Some(0), "quiet");
+    assert_eq!(cut_prefix_detaches("cub", true), Some(0), "output blocked");
+}

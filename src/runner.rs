@@ -360,17 +360,13 @@ impl Runner {
                 None => return 0,
             };
             // A held start settles SETTLE after the last read from the
-            // terminal, however busy the session's output keeps the loop.
+            // terminal, however busy the session's output keeps the loop,
+            // and only once the poll shows no more input waiting: a loop
+            // stalled past SETTLE (a slow terminal) may have its rest unread.
             let timeout = match self.scanner.has_pending() {
                 false => -1,
                 true => {
                     let left = SETTLE.saturating_sub(self.last_input.elapsed());
-                    if left.is_zero() {
-                        if let Flow::Exit(code) = self.on_settle() {
-                            return code;
-                        }
-                        continue;
-                    }
                     left.as_micros().div_ceil(1000) as i32
                 }
             };
@@ -378,8 +374,18 @@ impl Runner {
                 Ok(m) => m,
                 Err(_) => return 1,
             };
+            if self.scanner.has_pending()
+                && ready & 0b001 == 0
+                && self.last_input.elapsed() >= SETTLE
+            {
+                if let Flow::Exit(code) = self.on_settle() {
+                    return code;
+                }
+                // A chord may have switched windows: poll the new fds.
+                continue;
+            }
             if ready == 0 {
-                continue; // the settle above runs on the next turn
+                continue;
             }
 
             if ready & 0b100 != 0 {
