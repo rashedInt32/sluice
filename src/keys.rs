@@ -251,6 +251,11 @@ fn scan_one(buf: &[u8]) -> Scan {
             };
         }
         let len = utf8_len(b);
+        // A byte that cannot continue the character ends it now: an 8-bit
+        // meta key or Latin-1 byte is not held waiting for a tail.
+        if buf[1..len.min(buf.len())].iter().any(|&c| c & 0xc0 != 0x80) {
+            return Scan::Other(1);
+        }
         if buf.len() < len {
             return Scan::Incomplete;
         }
@@ -277,8 +282,16 @@ fn scan_one(buf: &[u8]) -> Scan {
     }
     match buf[1] {
         b'[' => match csi_len(buf) {
-            None => Scan::Incomplete,
-            Some(len) => match parse_csi_key(&buf[2..len - 1], buf[len - 1]) {
+            Csi::Incomplete => Scan::Incomplete,
+            // Not a sequence after all: alt+[, then whatever follows.
+            Csi::Invalid => Scan::Other(2),
+            // X10 mouse: `ESC [ M` and three raw bytes, any of which may look
+            // like a key.
+            Csi::Done(3) if buf[2] == b'M' => match buf.len() {
+                6.. => Scan::Other(6),
+                _ => Scan::Incomplete,
+            },
+            Csi::Done(len) => match parse_csi_key(&buf[2..len - 1], buf[len - 1]) {
                 Some(rep) if rep.pressed => {
                     let (key, exact) = report_key(rep);
                     Scan::Key { key, exact, len }
@@ -287,18 +300,24 @@ fn scan_one(buf: &[u8]) -> Scan {
                 None => Scan::Other(len),
             },
         },
-        // SS3: arrow and function keys in application mode.
-        b'O' => {
-            if buf.len() >= 3 {
-                Scan::Other(3)
-            } else {
-                Scan::Incomplete
-            }
-        }
+        // SS3: arrow and function keys in application mode. Anything but a
+        // final byte after it means this was alt+O.
+        b'O' => match buf.get(2) {
+            Some(0x40..=0x7e) => Scan::Other(3),
+            Some(_) => Scan::Other(2),
+            None => Scan::Incomplete,
+        },
         // OSC: a reply such as a clipboard read, terminated by BEL or ST.
         b']' => match osc_len(buf) {
             Some(len) => Scan::Other(len),
             None => Scan::Incomplete,
+        },
+        // DCS, SOS, PM, APC: replies such as XTVERSION or a kitty graphics
+        // status, ended by ST. Taken whole only when the end is in this read:
+        // ESC P alone is alt+P as typed.
+        b'P' | b'X' | b'^' | b'_' => match find(&buf[2..], b"\x1b\\") {
+            Some(j) => Scan::Other(j + 4),
+            None => Scan::Other(2),
         },
         // ESC + byte: alt-modified key and friends.
         _ => Scan::Other(2),
@@ -347,13 +366,22 @@ fn utf8_len(b: u8) -> usize {
 }
 
 /// Length of the CSI sequence at buf[0] == ESC, buf[1] == '[', if complete.
-fn csi_len(buf: &[u8]) -> Option<usize> {
+enum Csi {
+    Done(usize),
+    Incomplete,
+    /// A byte no CSI may hold: what came before was not a sequence.
+    Invalid,
+}
+
+fn csi_len(buf: &[u8]) -> Csi {
     for (i, &b) in buf.iter().enumerate().skip(2) {
-        if (0x40..=0x7e).contains(&b) {
-            return Some(i + 1);
+        match b {
+            0x40..=0x7e => return Csi::Done(i + 1),
+            0x20..=0x3f => {}
+            _ => return Csi::Invalid,
         }
     }
-    None
+    Csi::Incomplete
 }
 
 /// Length of the OSC string at buf[0] == ESC, buf[1] == ']', if complete.
@@ -416,9 +444,17 @@ fn parse_mods(field: Option<&str>) -> (u32, u32) {
     (mods, event)
 }
 
+/// The key a kitty key code names. Enter, Tab and Backspace are the keys
+/// their legacy bytes decode to. Kitty's functional keys (modifiers,
+/// arrows, F-keys, keypad) live in a private-use block and are no chord
+/// key: with "report all keys", the shift pressed to type `?` arrives
+/// first and must not stand in for the `?`.
 fn csi_u_key(code: u32) -> Option<Key> {
     match code {
         27 => Some(Key::Esc),
+        9 | 13 => Some(Key::Ctrl(legacy_ctrl(code as u8))),
+        127 => Some(Key::Ctrl('?')),
+        57344..=63743 => None,
         0x20..=0x10ffff => char::from_u32(code).map(Key::Char),
         _ => None,
     }
@@ -462,6 +498,74 @@ mod tests {
             Event::Chord { key, .. } => Some(*key),
             _ => None,
         }
+    }
+
+    #[test]
+    fn kitty_modifier_presses_are_not_chord_keys() {
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"\x01");
+        // left shift down, then `?` (code 47, shifted 63)
+        let ev = s.feed(b"\x1b[57441;2u\x1b[47:63;2u");
+        assert_eq!(ev[0], Event::Bytes(b"\x1b[57441;2u".to_vec()), "the shift goes through");
+        assert_eq!(chord(&ev[1]), Some(Key::Char('?')));
+        // kitty Enter, Tab, Backspace are the keys legacy bytes decode to
+        for (seq, byte) in [(&b"\x1b[13u"[..], b'\r'), (b"\x1b[9u", b'\t'), (b"\x1b[127u", 0x7f)] {
+            let mut k = Scanner::new(Key::Ctrl('a'));
+            k.feed(b"\x01");
+            let kitty = chord(&k.feed(seq)[0]);
+            let mut l = Scanner::new(Key::Ctrl('a'));
+            l.feed(b"\x01");
+            assert_eq!(kitty, chord(&l.feed(&[byte])[0]), "{seq:?}");
+        }
+    }
+
+    #[test]
+    fn replies_and_mouse_reports_are_not_picked_apart_while_armed() {
+        let armed = || {
+            let mut s = Scanner::new(Key::Ctrl('a'));
+            s.feed(b"\x01");
+            s
+        };
+        // X10 mouse: ESC [ M and three raw bytes
+        let mut s = armed();
+        assert_eq!(s.feed(b"\x1b[M !!"), vec![Event::Bytes(b"\x1b[M !!".to_vec())]);
+        assert!(s.is_waiting());
+        // a DCS reply, XTVERSION
+        let mut s = armed();
+        let dcs = b"\x1bP>|kitty(0.35)\x1b\\";
+        assert_eq!(s.feed(dcs), vec![Event::Bytes(dcs.to_vec())]);
+        assert!(s.is_waiting());
+        // ESC P alone is alt+P, typed: it is the chord key's business, not
+        // the start of a reply that swallows input
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        assert_eq!(s.feed(b"\x1bP"), vec![Event::Bytes(b"\x1bP".to_vec())]);
+    }
+
+    #[test]
+    fn alt_o_alt_bracket_and_8_bit_bytes_are_not_held() {
+        // `ESC O` then the prefix: the prefix is not eaten as an SS3 final
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        assert_eq!(s.feed(b"\x1bO"), vec![]);
+        let ev = s.feed(b"\x01d");
+        assert_eq!(ev[0], Event::Bytes(b"\x1bO".to_vec()));
+        assert!(matches!(ev[1], Event::Chord { key: Key::Char('d'), .. }));
+        // same for `ESC [`
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        s.feed(b"\x1b[");
+        let ev = s.feed(b"\x01d");
+        assert_eq!(ev[0], Event::Bytes(b"\x1b[".to_vec()));
+        assert!(matches!(ev[1], Event::Chord { key: Key::Char('d'), .. }));
+        // 8-bit meta alt+a is one byte, and what follows is not held behind it
+        let mut s = Scanner::new(Key::Ctrl('a'));
+        let mut got = Vec::new();
+        for c in [&b"\xe1"[..], b"x"] {
+            for e in s.feed(c) {
+                if let Event::Bytes(b) = e {
+                    got.extend(b);
+                }
+            }
+        }
+        assert_eq!(got, b"\xe1x".to_vec());
     }
 
     #[test]
@@ -595,10 +699,12 @@ mod tests {
             s.feed(b"\x1b[97;5:3u"),
             vec![Event::Bytes(b"\x1b[97;5:3u".to_vec())]
         );
-        // press arms, then a release of ctrl is skipped, then 'd'
+        // press arms; the release of ctrl goes to the program, which had its
+        // press, and does not stand in for the chord key; then 'd'
         s.feed(b"\x1b[97;5:1u");
         let ev = s.feed(b"\x1b[57442;1:3ud");
-        assert_eq!(chord(&ev[0]), Some(Key::Char('d')));
+        assert_eq!(ev[0], Event::Bytes(b"\x1b[57442;1:3u".to_vec()));
+        assert_eq!(chord(&ev[1]), Some(Key::Char('d')));
     }
 
     #[test]
