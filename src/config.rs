@@ -123,7 +123,6 @@ impl Config {
     pub fn parse(text: &str) -> (Config, Vec<String>) {
         let mut cfg = Config::defaults();
         let mut warnings = Vec::new();
-        let mut had_prefix = false;
         let mut sessionizer = None;
         for (lineno, raw) in text.lines().enumerate() {
             let line = strip_comment(raw);
@@ -136,14 +135,13 @@ impl Config {
             match directive {
                 "prefix" => match parse_key_name(rest) {
                     Some(k) => {
-                        // The old prefix's literal binding follows the prefix.
-                        if !had_prefix {
-                            if let Some(a) = cfg.binds.remove(&cfg.prefix) {
-                                cfg.binds.insert(k, a);
-                            }
+                        // The literal binding follows the prefix, however many
+                        // times it moves.
+                        if cfg.binds.get(&cfg.prefix) == Some(&Action::Literal) {
+                            cfg.binds.remove(&cfg.prefix);
+                            cfg.binds.insert(k, Action::Literal);
                         }
                         cfg.prefix = k;
-                        had_prefix = true;
                     }
                     None => warnings.push(format!("line {}: bad prefix key `{rest}`", lineno + 1)),
                 },
@@ -296,6 +294,14 @@ mod tests {
     }
 
     #[test]
+    fn the_literal_binding_follows_every_prefix_line() {
+        let (c, _) = Config::parse("prefix C-b\nprefix C-s\n");
+        assert_eq!(c.prefix, Key::Ctrl('s'));
+        assert_eq!(c.binds.get(&Key::Ctrl('s')), Some(&Action::Literal));
+        assert_eq!(c.binds.get(&Key::Ctrl('b')), None);
+    }
+
+    #[test]
     fn parse_overrides_and_warns() {
         let (c, w) = Config::parse(
             "# comment\nprefix C-b\nbind f run my-picker --flag\nbind 5 jump 2\nunbind x\nbogus 1\nbind zz pick\nbind f2 run\n",
@@ -377,8 +383,15 @@ fn strip_comment(raw: &str) -> &str {
     if t.starts_with('#') {
         return "";
     }
+    // `bind # ...` and `unbind #`: there `#` is the key, not a comment.
+    let mut from = 1;
+    for verb in ["bind # ", "unbind # "] {
+        if t.starts_with(verb) || t == verb.trim_end() {
+            from = verb.len();
+        }
+    }
     let bytes = t.as_bytes();
-    for i in 1..bytes.len() {
+    for i in from..bytes.len() {
         if bytes[i] == b'#' && bytes[i - 1].is_ascii_whitespace() {
             return t[..i].trim_end();
         }
@@ -399,6 +412,16 @@ mod comment_tests {
         assert_eq!(c.binds[&Key::Char('5')], Action::Jump(2));
         assert_eq!(c.binds[&Key::Char('?')], Action::Help);
         assert_eq!(c.binds[&Key::Char('r')], Action::Run("echo a#b".into()));
+    }
+
+    #[test]
+    fn hash_can_be_bound_and_unbound() {
+        let (c, w) = Config::parse("bind # pick   # a comment\n");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.binds[&Key::Char('#')], Action::Pick);
+        let (c, w) = Config::parse("bind # pick\nunbind #\n");
+        assert!(w.is_empty(), "{w:?}");
+        assert!(!c.binds.contains_key(&Key::Char('#')));
     }
 
     #[test]
