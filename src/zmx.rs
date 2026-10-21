@@ -266,6 +266,24 @@ pub fn kill_target(name: &str, live: &[Session]) -> usize {
     targets.iter().filter(|t| kill(t)).count()
 }
 
+/// The session a typed name means: one that exists under exactly that name
+/// (zmx itself takes `a.b`), else the name sanitized for a new session. A
+/// window spelling (`a.b+2`) keeps its session part the same way.
+pub fn typed_name(raw: &str, live: &[Session]) -> String {
+    if live.iter().any(|s| s.name == raw) {
+        return raw.to_string();
+    }
+    let (g, k) = window_of(raw);
+    let g = match groups(live).iter().any(|x| x.name == g) {
+        true => g.to_string(),
+        false => sanitize_name(g),
+    };
+    match is_window_ref(raw) {
+        true => format!("{g}+{k}"),
+        false => g,
+    }
+}
+
 /// Session names share zmx's socket directory, so `/` is out; tmux also forbade
 /// `.` `:` and spaces and the user's scripts already map those to `_`.
 /// Control characters go too, so names sluice makes draw cleanly. Names

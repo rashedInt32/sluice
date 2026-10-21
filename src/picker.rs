@@ -57,8 +57,10 @@ pub fn parse_choice(line: &str) -> Option<Choice> {
         return None;
     }
     let mut fields = line.split('\t');
-    let name = crate::zmx::sanitize_name(fields.next()?.trim());
-    if name.is_empty() {
+    // As written: the caller sanitizes it unless zmx runs that very name,
+    // which a script such as claude-picker hands back.
+    let name = fields.next()?.trim().to_string();
+    if crate::zmx::sanitize_name(&name).is_empty() {
         return None;
     }
     let cwd = fields
@@ -427,7 +429,7 @@ mod tests {
             parse_choice("\t/tmp").is_none(),
             "a row with no name is not a choice"
         );
-        assert_eq!(parse_choice("a.b\t").unwrap().name, "a_b");
+        assert_eq!(parse_choice("a.b\t").unwrap().name, "a.b", "the caller sanitizes");
         assert!(parse_choice("x\0y\t/tmp").is_none(), "NUL in the name");
         assert!(parse_choice("x\t/tm\0p").is_none(), "NUL in the directory");
         assert!(parse_choice("x\t/tmp\tsh -c\0").is_none(), "NUL in the command");

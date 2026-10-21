@@ -61,6 +61,7 @@ impl Runner {
         cfg: Config,
         name: &str,
         cwd: Option<&str>,
+        cmd: Option<&[String]>,
         live: &[Session],
     ) -> std::io::Result<Runner> {
         clients::sweep();
@@ -85,7 +86,7 @@ impl Runner {
             registration: None,
             attaches: 0,
         };
-        r.attach(&target, cwd, None)?;
+        r.attach(&target, cwd, cmd)?;
         Ok(r)
     }
 
@@ -168,9 +169,12 @@ impl Runner {
             }
             let msg = format!("\r\nsluice: zmx did not open `{name}`. Press a key.\r\n");
             let _ = sys::write_all(STDOUT, msg.as_bytes());
-            let mut key = [0u8; 64];
-            let _ = sys::read(STDIN, &mut key);
-            return self.land_after_loss(&live, 1);
+            if let Flow::Exit(c) = self.wait_for_key() {
+                return Flow::Exit(c);
+            }
+            // The wait has no end: list again rather than land on a window
+            // killed meanwhile, which zmx would make anew.
+            return self.land_after_loss(&zmx::list(), 1);
         }
         if alive || self.cfg.on_end == OnEnd::Close {
             return Flow::Exit(code);
@@ -193,6 +197,34 @@ impl Runner {
                 self.attach_or_exit(&t, None, None)
             }
             None => Flow::Exit(code),
+        }
+    }
+
+    /// Wait for a key, still heeding signals: a hangup or SIGTERM ends
+    /// sluice, and anything else (a `sluice switch`) ends the wait and is
+    /// handled once a window is on screen again.
+    fn wait_for_key(&mut self) -> Flow {
+        loop {
+            let ready = match sys::poll_readable([STDIN, self.sig_fd]) {
+                Ok(m) => m,
+                Err(_) => return Flow::Exit(1),
+            };
+            if ready & 0b10 != 0 {
+                let sigs = sys::drain_signals(self.sig_fd);
+                let quit = [libc::SIGHUP, libc::SIGTERM, libc::SIGINT, libc::SIGQUIT];
+                if sigs.iter().any(|s| quit.contains(s)) {
+                    return Flow::Exit(0);
+                }
+                sys::repost_signals(&sigs);
+                return Flow::Continue;
+            }
+            if ready & 0b01 != 0 {
+                let mut key = [0u8; 64];
+                return match sys::read(STDIN, &mut key) {
+                    Ok(0) | Err(_) => Flow::Exit(0),
+                    Ok(_) => Flow::Continue,
+                };
+            }
         }
     }
 
@@ -576,7 +608,8 @@ impl Runner {
     fn finish_switch(&mut self, choice: Option<Choice>) -> Flow {
         let live = zmx::list();
         if let Some(c) = choice {
-            let target = Self::resolve(&c.name, &live, &self.last_window);
+            let name = zmx::typed_name(&c.name, &live);
+            let target = Self::resolve(&name, &live, &self.last_window);
             if target != self.current {
                 self.previous = Some(std::mem::replace(&mut self.current, target.clone()));
                 return self.attach_or_exit(&target, c.cwd.as_deref(), c.cmd.as_deref());
@@ -602,9 +635,12 @@ impl Runner {
             return Flow::Continue;
         };
         let live = zmx::list();
-        let group = zmx::window_of(&p).0.to_string();
+        let (group, k) = zmx::window_of(&p);
+        let group = group.to_string();
         if live.iter().any(|s| s.name == p) {
-            self.switch_in(&live, Choice::named(p))
+            // Spelled as a window: a bare name is a session, which resolve
+            // takes to the window last shown there, maybe the one on screen.
+            self.switch_in(&live, Choice::named(format!("{group}+{k}")))
         } else if zmx::groups(&live).iter().any(|g| g.name == group) {
             self.switch_in(&live, Choice::named(group))
         } else {

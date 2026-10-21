@@ -131,7 +131,7 @@ fn real_main(args: &[String]) -> i32 {
         let home = std::env::var("HOME").ok().map(std::path::PathBuf::from);
         let name = here_name(&cwd, home.as_deref(), &zmx::groups(&live));
         let dir = cwd.to_string_lossy().into_owned();
-        return match runner::Runner::start(cfg, &name, Some(&dir), &live) {
+        return match runner::Runner::start(cfg, &name, Some(&dir), None, &live) {
             Ok(r) => r.run(),
             Err(e) => {
                 eprintln!("sluice: {e}");
@@ -140,12 +140,16 @@ fn real_main(args: &[String]) -> i32 {
         };
     }
 
-    let (name, cwd, live) = match parse_attach_args(args) {
-        Ok(Some((name, cwd))) => (session_name(&name, &live), cwd, live),
+    let (name, cwd, cmd, live) = match parse_attach_args(args) {
+        Ok(Some((name, cwd))) => (zmx::typed_name(&name, &live), cwd, None, live),
         // The picker and the sessionizer can take a while, and the picker
-        // can kill sessions: list again after them.
+        // can kill sessions: list again after them. A sessionizer line may
+        // name a command for the new session, as a bound script's does.
         Ok(None) => match pick_or_sessionize(&cfg, &live) {
-            Some(c) => (c.name, c.cwd, zmx::list()),
+            Some(c) => {
+                let live = zmx::list();
+                (zmx::typed_name(&c.name, &live), c.cwd, c.cmd, live)
+            }
             None => return 3,
         },
         Err(msg) => {
@@ -155,7 +159,7 @@ fn real_main(args: &[String]) -> i32 {
         }
     };
 
-    match runner::Runner::start(cfg, &name, cwd.as_deref(), &live) {
+    match runner::Runner::start(cfg, &name, cwd.as_deref(), cmd.as_deref(), &live) {
         Ok(r) => r.run(),
         Err(e) => {
             eprintln!("sluice: {e}");
@@ -184,24 +188,6 @@ fn canonical_window(name: String) -> String {
             zmx::window_name(g, k)
         }
         false => name,
-    }
-}
-
-/// The session a typed name means: one that exists under exactly that name
-/// (zmx itself takes `a.b`), else the name sanitized for a new session. A
-/// window spelling (`a.b+2`) keeps its session part the same way.
-fn session_name(raw: &str, live: &[zmx::Session]) -> String {
-    if live.iter().any(|s| s.name == raw) {
-        return raw.to_string();
-    }
-    let (g, k) = zmx::window_of(raw);
-    let g = match zmx::groups(live).iter().any(|x| x.name == g) {
-        true => g.to_string(),
-        false => zmx::sanitize_name(g),
-    };
-    match zmx::is_window_ref(raw) {
-        true => format!("{g}+{k}"),
-        false => g,
     }
 }
 
@@ -376,7 +362,7 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
         ("switch", Some(t)) => {
             // A session (any of its windows alive) or one explicit window.
             let live = zmx::list();
-            let t = &session_name(t, &live);
+            let t = &zmx::typed_name(t, &live);
             let exists = if zmx::is_window_ref(t) {
                 let (g, k) = zmx::window_of(t);
                 let w = zmx::window_name(g, k);
@@ -745,12 +731,12 @@ mod tests {
             dir: String::new(),
         };
         let live = [s("a.b"), s("g"), s("g+2")];
-        assert_eq!(session_name("a.b", &live), "a.b", "zmx made it: keep it");
-        assert_eq!(session_name("c.d", &live), "c_d", "new: sanitized");
-        assert_eq!(session_name("g+2", &live), "g+2");
-        assert_eq!(session_name("a.b+1", &live), "a.b+1", "a window of a.b");
-        assert_eq!(session_name("a.b+3", &live), "a.b+3");
-        assert_eq!(session_name("c.d+2", &live), "c_d+2");
+        assert_eq!(zmx::typed_name("a.b", &live), "a.b", "zmx made it: keep it");
+        assert_eq!(zmx::typed_name("c.d", &live), "c_d", "new: sanitized");
+        assert_eq!(zmx::typed_name("g+2", &live), "g+2");
+        assert_eq!(zmx::typed_name("a.b+1", &live), "a.b+1", "a window of a.b");
+        assert_eq!(zmx::typed_name("a.b+3", &live), "a.b+3");
+        assert_eq!(zmx::typed_name("c.d+2", &live), "c_d+2");
         assert_eq!(canonical_window("x+1".into()), "x");
         assert_eq!(canonical_window("x+2".into()), "x+2");
     }

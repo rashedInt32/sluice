@@ -1425,8 +1425,11 @@ fn a_new_window_zmx_refuses_says_so_and_goes_back() {
     p.expect("zmx did not open", Duration::from_secs(5));
     p.send(b"x");
     p.wait_clients(&name, Some(1), Duration::from_secs(5));
-    p.send(b"\x01d");
-    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    // waiting for that key, sluice still ends on SIGTERM
+    p.send(b"\x01c");
+    p.expect("zmx did not open", Duration::from_secs(5));
+    unsafe { libc::kill(p.pid, libc::SIGTERM) };
+    assert_eq!(p.wait_exit(Duration::from_secs(3)), Some(0), "SIGTERM waited for a key");
 }
 
 #[test]
@@ -1484,4 +1487,61 @@ fn a_spelled_out_window_1_is_that_window_alone_and_a_stuck_client_fails_detach()
     assert_eq!(out.status.code(), Some(1), "{}", String::from_utf8_lossy(&out.stderr));
     // it detaches once it runs again
     assert_eq!(t2.wait_exit(Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn prefix_0_returns_to_another_window_of_the_same_session() {
+    if !zmx_present() {
+        return;
+    }
+    let mut env = Env::new("pw", "");
+    let a = env.session("pw");
+    let a2 = format!("{a}+2");
+    let p = env.spawn(&[&a]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"\x01c");
+    p.wait_clients(&a2, Some(1), Duration::from_secs(5));
+    p.send(b"\x01p");
+    p.wait_clients(&a, Some(1), Duration::from_secs(5));
+    // from outside, to window 2: previous is now window 1 of the same session
+    let out = sluice_cmd(&["switch", &a2, "--session", &a], &env.state);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    p.wait_clients(&a2, Some(1), Duration::from_secs(5));
+    p.send(b"\x010");
+    p.wait_clients(&a, Some(1), Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+}
+
+#[test]
+fn the_startup_sessionizer_runs_its_command() {
+    if !zmx_present() || !fzf_present() {
+        return;
+    }
+    let mut env = Env::new("sz", "");
+    let t = env.session("sz");
+    // a command that shows it ran, then leaves a shell
+    let prog = env.dir.join("prog");
+    std::fs::write(&prog, "#!/bin/sh\necho sessionizer-ran\nexec /bin/sh\n").unwrap();
+    std::fs::set_permissions(&prog, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let script = env.dir.join("sz");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf '%s\\t/tmp\\t%s\\n' {t} {}\n", prog.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(
+        format!("{}/sluice/config", env.cfg),
+        format!("sessionizer {}\n", script.display()),
+    )
+    .unwrap();
+    let p = env.spawn(&[]);
+    // the picker opens when sessions exist; q goes to the sessionizer
+    std::thread::sleep(Duration::from_millis(800));
+    p.drain_now();
+    p.send(b"q");
+    p.expect("sessionizer-ran", Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }
