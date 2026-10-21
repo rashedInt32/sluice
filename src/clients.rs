@@ -9,12 +9,13 @@
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 
+/// `$XDG_STATE_HOME`, or `~/.local/state`. The spec says to ignore a
+/// relative or empty value: state would land in whatever directory sluice
+/// was started from.
 pub fn base() -> PathBuf {
     match std::env::var("XDG_STATE_HOME") {
-        Ok(x) => PathBuf::from(x),
-        Err(_) => {
-            PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".local/state")
-        }
+        Ok(x) if x.starts_with('/') => PathBuf::from(x),
+        _ => PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(".local/state"),
     }
 }
 

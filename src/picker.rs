@@ -258,7 +258,16 @@ fn fzf_with(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
-    let mut child = cmd.spawn().ok()?;
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            // The tty is ours and cooked here: say why nothing opens, and
+            // keep it on screen until it is read.
+            eprint!("sluice: cannot run fzf ({e}); the pickers need it. Press Enter.");
+            let _ = std::io::stdin().read_line(&mut String::new());
+            return None;
+        }
+    };
     {
         let mut stdin = child.stdin.take()?;
         for l in lines {

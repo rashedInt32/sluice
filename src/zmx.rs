@@ -121,7 +121,12 @@ fn cwd_path(v: &str) -> String {
     let path = raw_path(v);
     let path = path.as_str();
     if let Ok(home) = std::env::var("HOME") {
-        if let Some(rest) = path.strip_prefix(home.as_str()) {
+        // `HOME=/Users/x/` is still /Users/x; `HOME=/` shortens nothing.
+        let home = home.trim_end_matches('/');
+        if home.is_empty() {
+            return path.to_string();
+        }
+        if let Some(rest) = path.strip_prefix(home) {
             if rest.is_empty() || rest.starts_with('/') {
                 return format!("~{rest}");
             }

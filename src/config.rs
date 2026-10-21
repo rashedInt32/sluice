@@ -61,9 +61,13 @@ pub struct Config {
     pub title: bool,
 }
 
+/// `$XDG_CONFIG_HOME/sluice`, or `~/.config/sluice`; a relative or empty
+/// `$XDG_CONFIG_HOME` is ignored, as the spec asks.
 pub fn config_dir() -> PathBuf {
     if let Ok(x) = std::env::var("XDG_CONFIG_HOME") {
-        return PathBuf::from(x).join("sluice");
+        if x.starts_with('/') {
+            return PathBuf::from(x).join("sluice");
+        }
     }
     PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into()))
         .join(".config")
