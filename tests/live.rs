@@ -1655,3 +1655,21 @@ fn alt_close_bracket_typed_does_not_swallow_the_prefix_after_it() {
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 }
+
+#[test]
+fn a_held_alt_key_settles_while_the_session_prints() {
+    if !zmx_present() {
+        return;
+    }
+    let mut env = Env::new("bz", "");
+    let a = env.session("bz");
+    let p = env.spawn(&[&a]);
+    p.expect("$", Duration::from_secs(5));
+    // output every 10 ms keeps sluice's loop waking up
+    p.send(b"while :; do printf .; sleep 0.01; done &\r");
+    std::thread::sleep(Duration::from_millis(300));
+    p.send(b"\x1b]");
+    std::thread::sleep(Duration::from_millis(200));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+}

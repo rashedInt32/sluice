@@ -23,7 +23,7 @@ const BUF: usize = 64 * 1024;
 /// How long a held sequence start waits for its rest before it counts as
 /// typed. The rest of a sequence a read cut follows within microseconds;
 /// the next typed key takes tens of milliseconds.
-const SETTLE_MS: i32 = 50;
+const SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
 
 pub struct Runner {
     cfg: Config,
@@ -45,6 +45,9 @@ pub struct Runner {
     titles: title::Filter,
     /// this client's entry in the registry, for the window on screen
     registration: Option<clients::Registration>,
+    /// when the last read from the terminal came in, for settling a held
+    /// sequence start: output and signals do not reset it
+    last_input: std::time::Instant,
     /// how many times a window was attached; the first is the one asked for
     attaches: u32,
 }
@@ -90,6 +93,7 @@ impl Runner {
             titles: title::Filter::default(),
             registration: None,
             attaches: 0,
+            last_input: std::time::Instant::now(),
         };
         r.attach(&target, cwd, cmd)?;
         Ok(r)
@@ -355,19 +359,27 @@ impl Runner {
                 Some(c) => (c.pid, c.master),
                 None => return 0,
             };
+            // A held start settles SETTLE after the last read from the
+            // terminal, however busy the session's output keeps the loop.
             let timeout = match self.scanner.has_pending() {
-                true => SETTLE_MS,
                 false => -1,
+                true => {
+                    let left = SETTLE.saturating_sub(self.last_input.elapsed());
+                    if left.is_zero() {
+                        if let Flow::Exit(code) = self.on_settle() {
+                            return code;
+                        }
+                        continue;
+                    }
+                    left.as_micros().div_ceil(1000) as i32
+                }
             };
             let ready = match sys::poll_readable([STDIN, master, self.sig_fd], timeout) {
                 Ok(m) => m,
                 Err(_) => return 1,
             };
             if ready == 0 {
-                if let Flow::Exit(code) = self.on_settle() {
-                    return code;
-                }
-                continue;
+                continue; // the settle above runs on the next turn
             }
 
             if ready & 0b100 != 0 {
@@ -411,6 +423,7 @@ impl Runner {
                         return 0;
                     }
                     Ok(n) => {
+                        self.last_input = std::time::Instant::now();
                         if let Flow::Exit(code) = self.on_input(&buf[..n]) {
                             return code;
                         }

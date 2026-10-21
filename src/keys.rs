@@ -116,8 +116,11 @@ impl Scanner {
     }
 
     /// Whether a sequence's start is held for the next read.
+    /// In a paste, a held end-marker tail never settles: the terminal
+    /// always finishes it, however late, and let go as text it would leave
+    /// the scanner in the paste for good.
     pub fn has_pending(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() && !self.in_paste
     }
 
     /// No more input came after a held start: it was typed, not cut off.
@@ -126,6 +129,9 @@ impl Scanner {
     /// sequence at once, and a read boundary inside it is followed at once
     /// by the rest, so the caller calls this after a short quiet spell.
     pub fn settle(&mut self, handed_off: impl FnMut() -> bool) -> Vec<Event> {
+        if !self.has_pending() {
+            return Vec::new();
+        }
         let held = std::mem::take(&mut self.pending);
         self.scan(&held, handed_off, true)
     }
@@ -164,10 +170,8 @@ impl Scanner {
                     self.in_paste = false;
                     continue;
                 }
-                // Hold back a tail that could be the start of the end marker,
-                // unless the input has gone quiet: then it is pasted text.
+                // Hold back a tail that could be the start of the end marker.
                 let keep = (1..PASTE_END.len())
-                    .filter(|_| !settled)
                     .rev()
                     .find(|&k| data[i..].ends_with(&PASTE_END[..k]))
                     .unwrap_or(0);
@@ -191,8 +195,14 @@ impl Scanner {
                         self.pending = rest.to_vec();
                         return out;
                     }
-                    // Not a sequence after all: let one byte through and resync.
-                    i += 1;
+                    // Not a sequence after all. Typed, ESC and the byte after
+                    // it are one alt key, which goes through whole, as alt+x
+                    // does, and never stands in for an armed chord key.
+                    // Otherwise let one byte through and resync.
+                    i += match (settled, rest) {
+                        (true, [0x1b, _, ..]) => 2,
+                        _ => 1,
+                    };
                 }
                 Scan::Release(len) => {
                     // While the prefix waits, the release of the prefix key
@@ -614,10 +624,21 @@ mod tests {
         s.feed(b"ls\x1b[");
         let ev = s.feed(b"200~a\x01d\x1b[201~");
         assert!(ev.iter().all(|e| matches!(e, Event::Bytes(_))), "{ev:?}");
-        // a paste end marker held when input goes quiet is pasted text
+        // a paste end marker cut by a long pause is still the end
         let mut s = Scanner::new(Key::Ctrl('a'));
-        s.feed(b"\x1b[200~ab\x1b[20");
-        assert_eq!(s.settle(|| false), vec![Event::Bytes(b"\x1b[20".to_vec())]);
+        s.feed(b"\x1b[200~ab\x1b[201");
+        assert!(!s.has_pending(), "nothing to settle in a paste");
+        assert_eq!(s.settle(|| false), vec![]);
+        assert_eq!(s.feed(b"~"), vec![Event::Bytes(b"\x1b[201~".to_vec())]);
+        assert!(matches!(s.feed(b"\x01d")[..], [Event::Chord { key: Key::Char('d'), .. }]));
+        // armed, then alt+] typed: through whole, and the prefix stays armed
+        for alt in [&b"\x1b]"[..], b"\x1b[", b"\x1bO"] {
+            let mut s = Scanner::new(Key::Ctrl('a'));
+            s.feed(b"\x01");
+            s.feed(alt);
+            assert_eq!(s.settle(|| false), vec![Event::Bytes(alt.to_vec())], "{alt:?}");
+            assert!(s.is_waiting(), "{alt:?}");
+        }
         // SS3 with a modifier passes whole while armed
         let mut s = Scanner::new(Key::Ctrl('a'));
         s.feed(b"\x01");
