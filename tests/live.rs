@@ -1800,3 +1800,26 @@ fn the_window_picker_shows_what_runs_jumps_and_kills_one_window() {
     kill_session(&w2);
     kill_session(&w3);
 }
+
+#[test]
+fn a_drag_for_a_button_never_pressed_reaches_the_program_as_motion() {
+    if !zmx_present() {
+        return;
+    }
+    // Ghostty holds the right button down after its context menu takes the
+    // release, and reports every pointer move as a right drag.
+    let s = uniq("mouse");
+    let p = spawn(&[&s], &[]);
+    p.expect("$", Duration::from_secs(5));
+    // cat -v shows what arrives; raw, so the reports are not line-edited
+    p.send(b"stty raw -echo; cat -v\r");
+    p.drain(Duration::from_millis(500));
+    p.send(b"\x1b[<34;7;3M");
+    p.expect("^[[<35;7;3M", Duration::from_secs(5));
+    // a real drag, press first, goes through as the terminal sent it
+    p.send(b"\x1b[<2;7;3M\x1b[<34;8;3M\x1b[<2;8;3m");
+    p.expect("^[[<34;8;3M", Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    kill_session(&s);
+}

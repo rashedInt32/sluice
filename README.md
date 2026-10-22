@@ -172,6 +172,10 @@ zmx replays mouse, paste, alternate screen and modifyOtherKeys when a client rea
 
 sluice reads the output it forwards for the few sequences that change that state, keeps the result per session, puts the terminal's keyboard in a neutral state between sessions, and re-applies a session's flags when it comes back. Sessions this sluice has never shown start neutral; a program that enabled the protocol there will need to re-assert it, which is also what zmx does today.
 
+## A stuck right button
+
+Mouse reports reach the program as the terminal sent them, with one repair. A right-click where no program has the mouse, at a shell prompt say, opens Ghostty's context menu. The menu takes the button's release, so Ghostty holds the right button down from then on and reports every pointer move as a right-button drag. In a terminal window in Neovim a drag ends terminal mode, so moving the pointer over an agent's pane dropped it to normal mode. sluice sees every press and release while a window is on screen, so a drag for a button it never saw pressed goes through as plain pointer motion. Under tmux with the mouse on, a program always had the mouse and the menu never opened.
+
 ## Shell integration
 
 Replace the tmux auto-attach in `.zshrc` with this. No name means the session picker; Esc there means the project picker; Esc again leaves you in the plain shell. A clean exit, a detach or the session ending, closes the window like tmux did.

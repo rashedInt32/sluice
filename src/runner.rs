@@ -12,6 +12,7 @@ use crate::config::{Action, Config, OnEnd};
 use crate::handoff;
 use crate::kbd::{KittyState, NEUTRAL};
 use crate::keys::{Event, Key, Scanner};
+use crate::mouse;
 use crate::picker::{self, Choice};
 use crate::sys::{self, Child, RawMode, STDIN, STDOUT};
 use crate::title;
@@ -50,6 +51,9 @@ pub struct Runner {
     kbd_saved: HashMap<String, KittyState>,
     /// drops the programs' own window titles, with `title on`
     titles: title::Filter,
+    /// mouse buttons the terminal has reported held, to repair its drags.
+    /// The terminal's, not a window's: kept across switches.
+    buttons: mouse::Buttons,
     /// this client's entry in the registry, for the window on screen
     registration: Option<clients::Registration>,
     /// when the last read from the terminal came in, for settling a held
@@ -121,6 +125,7 @@ impl Runner {
             kbd: KittyState::default(),
             kbd_saved: HashMap::new(),
             titles: title::Filter::default(),
+            buttons: mouse::Buttons::default(),
             registration: None,
             attaches: 0,
             last_input: std::time::Instant::now(),
@@ -563,7 +568,7 @@ impl Runner {
             match ev {
                 Event::Bytes(b) => {
                     if let Some(c) = &self.child {
-                        let _ = sys::write_all(c.master, &b);
+                        let _ = sys::write_all(c.master, &self.buttons.filter(&b));
                     }
                 }
                 Event::Chord { key, raw_prefix } => {

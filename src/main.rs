@@ -3,6 +3,7 @@ mod config;
 mod handoff;
 mod kbd;
 mod keys;
+mod mouse;
 mod picker;
 mod procs;
 mod runner;
