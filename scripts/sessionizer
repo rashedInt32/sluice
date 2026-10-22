@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # sessionizer — pick a project directory, print "<session>\t<dir>" for sluice.
 # Same list and fzf feel as tmux-sessionizer; only the last lines differ.
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-
 # Under sluice ($SLUICE set) the picker stays drawn when fzf exits, and
 # sluice swaps it for the session in one frame. Run by hand, fzf clears up.
-selected=$("$here/project-dirs" \
+# The folders come from `sluice projects`: the config's project lists, or
+# every folder under home when it has none.
+selected=$("${SLUICE:-sluice}" projects \
   | fzf --with-nth=1 --delimiter="\t" --ansi --prompt='project > ' ${SLUICE:+--no-clear} \
   | cut -d$'\t' -f2 | sed 's/[[:space:]]*$//')
 

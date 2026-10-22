@@ -6,6 +6,7 @@ mod keys;
 mod mouse;
 mod picker;
 mod procs;
+mod projects;
 mod runner;
 mod sys;
 mod title;
@@ -40,6 +41,10 @@ usage:
                                       pass the prefix key through to the program
                                       (for loom.nvim); session defaults to $ZMX_SESSION,
                                       pid to the caller; a dead pid ends the handoff
+  sluice projects                     the folders the project picker offers, as
+                                      label<TAB>path: `projects`, `project-roots`
+                                      and `project-skip` in the config, or every
+                                      folder under home when none is set
   sluice picker-style [--label L] [--accent #rrggbb] [--hints H] [--preview]
                                       the pickers' fzf look and nav keys as quoted
                                       shell words, for a script's own fzf;
@@ -81,6 +86,7 @@ fn real_main(args: &[String]) -> i32 {
         Some("switch") => return control_cmd("switch", &args[1..]),
         Some("kill") => return kill_cmd(&args[1..]),
         Some("picker-style") => return picker_style_cmd(&args[1..]),
+        Some("projects") => return projects_cmd(&args[1..]),
         Some("keys") => {
             let (cfg, warnings) = Config::load();
             for w in &warnings {
@@ -293,6 +299,28 @@ fn list_cmd(args: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// `projects`: the project picker's folders, for the sessionizer.
+fn projects_cmd(args: &[String]) -> i32 {
+    if let Some(a) = args.first() {
+        eprintln!("sluice: projects: unknown argument {a}");
+        return 2;
+    }
+    let (cfg, warnings) = Config::load();
+    for w in warnings {
+        eprintln!("sluice: config: {w}");
+    }
+    let stdout = std::io::stdout();
+    match projects::list(&cfg.projects, &clients::home(), &mut stdout.lock()) {
+        Ok(()) => 0,
+        // fzf closed the pipe: the pick is made
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+        Err(e) => {
+            eprintln!("sluice: projects: {e}");
+            1
+        }
+    }
 }
 
 /// `picker-style [--label L] [--accent #rrggbb] [--hints H]`: the shared fzf

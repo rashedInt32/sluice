@@ -16,6 +16,21 @@ title off
 # cancelled. Without this line it is whatever `s` runs below.
 # sessionizer ~/.config/sluice/bin/sessionizer
 
+# The project picker (prefix+s): what it offers. With none of these three
+# lists, every folder under home, a few levels deep (hidden folders, Library
+# and build output skipped). A list is `[a, b]` or one entry per line.
+#
+# projects [                  # folders listed as they are
+#   ~/.config/nvim
+# ]
+# project-roots [             # every folder inside these
+#   ~/code
+#   ~/work
+# ]
+# project-skip [              # left out
+#   ~/code/archive
+# ]
+
 bind f pick                                   # fzf over live sessions, with screen preview
 bind s run ~/.config/sluice/bin/sessionizer   # project picker -> session (tmux-sessionizer port)
 bind g run ~/.config/sluice/bin/worktree      # git worktree picker (tmux-worktree port)
@@ -24,6 +39,7 @@ bind u run ~/.config/sluice/bin/claude-picker # every running Claude agent, and 
 bind c new-window                             # new window in this session
 bind n next-window                            # next window, wrapping
 bind p prev-window                            # previous window, wrapping
+bind w pick-window                            # this session's windows, with what each one runs
 bind 0 prev                                   # previous session
 bind 1 jump 1                                 # sessions numbered in creation order
 bind 2 jump 2

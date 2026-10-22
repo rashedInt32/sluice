@@ -4,14 +4,19 @@ set -euo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 command -v zmx >/dev/null || { echo "zmx missing: brew install neurosnap/tap/zmx"; exit 1; }
 command -v fzf >/dev/null || { echo "fzf missing: brew install fzf"; exit 1; }
+command -v cargo >/dev/null || { echo "cargo missing: install Rust from https://rustup.rs"; exit 1; }
 cargo install --path "$here" --locked --quiet
 bin="${XDG_CONFIG_HOME:-$HOME/.config}/sluice/bin"
 mkdir -p "$bin"
 for f in sessionizer worktree claude-here claude-picker agents; do
   install -m 755 "$here/scripts/$f" "$bin/$f"
 done
-# project-dirs is yours to edit, so it is only copied the first time.
-[[ -f "$bin/project-dirs" ]] || install -m 755 "$here/scripts/project-dirs" "$bin/project-dirs"
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}/sluice/config"
 [[ -f "$cfg" ]] || install -m 644 "$here/config.example" "$cfg"
-echo "installed: $(command -v sluice), pickers in $bin, config at $cfg"
+cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
+echo "installed: $cargo_bin/sluice, pickers in $bin, config at $cfg"
+case ":$PATH:" in
+  *":$cargo_bin:"*) ;;
+  *) echo "note: $cargo_bin is not on your PATH; add it so \`sluice\` is found" ;;
+esac
+command -v jq >/dev/null || echo "note: prefix+u (the Claude agent picker) needs jq: brew install jq"

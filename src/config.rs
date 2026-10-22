@@ -61,6 +61,21 @@ pub struct Config {
     /// `title on`: the window title is the session name, and programs inside
     /// cannot change it.
     pub title: bool,
+    /// What the project picker lists; see `projects.rs`. As written in the
+    /// file, `~` not yet expanded.
+    pub projects: Projects,
+}
+
+/// The `projects`, `project-roots` and `project-skip` lists. All empty means
+/// nothing was configured, and the picker lists every folder under home.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Projects {
+    /// folders listed as they are
+    pub dirs: Vec<String>,
+    /// folders whose subfolders are listed
+    pub roots: Vec<String>,
+    /// folders left out
+    pub skip: Vec<String>,
 }
 
 /// `$XDG_CONFIG_HOME/sluice`, or `~/.config/sluice`; a relative or empty
@@ -113,6 +128,7 @@ impl Config {
             on_end: OnEnd::Previous,
             sessionizer: Some(sessionizer),
             title: false,
+            projects: Projects::default(),
         }
     }
 
@@ -134,7 +150,8 @@ impl Config {
         // defaults; the last line about a key wins.
         let mut bound: Vec<Key> = Vec::new();
         let mut unbound: Vec<Key> = Vec::new();
-        for (lineno, raw) in text.lines().enumerate() {
+        let mut lines = text.lines().enumerate();
+        while let Some((lineno, raw)) = lines.next() {
             let line = strip_comment(raw);
             if line.is_empty() {
                 continue;
@@ -184,6 +201,19 @@ impl Config {
                     "off" => cfg.title = false,
                     _ => warnings.push(format!("line {}: title wants `on` or `off`", lineno + 1)),
                 },
+                "projects" | "project-roots" | "project-skip" => {
+                    match list_items(rest, &mut lines) {
+                        Ok(items) => {
+                            let into = match directive {
+                                "projects" => &mut cfg.projects.dirs,
+                                "project-roots" => &mut cfg.projects.roots,
+                                _ => &mut cfg.projects.skip,
+                            };
+                            into.extend(items);
+                        }
+                        Err(e) => warnings.push(format!("line {}: {directive}: {e}", lineno + 1)),
+                    }
+                }
                 "sessionizer" if rest.is_empty() => warnings.push(format!(
                     "line {}: `sessionizer` needs a command",
                     lineno + 1
@@ -322,6 +352,39 @@ mod tests {
         assert_eq!(c.binds[&Key::Char('n')], Action::NextWindow);
         assert_eq!(c.binds[&Key::Char('p')], Action::PrevWindow);
         assert_eq!(c.binds[&Key::Char('w')], Action::PickWindow);
+    }
+
+    #[test]
+    fn project_lists_take_brackets_commas_comments_and_repeats() {
+        let text = "projects [~/.claude, ~/notes]\n\
+                    project-roots [   # every folder inside\n\
+                    \x20 ~/.config\n\
+                    \n\
+                    \x20 ~/code, /srv/work   # two on a line\n\
+                    ]\n\
+                    project-skip ~/code/js\n\
+                    project-roots [~/more]\n\
+                    title on\n";
+        let (c, w) = Config::parse(text);
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.projects.dirs, ["~/.claude", "~/notes"]);
+        assert_eq!(c.projects.roots, ["~/.config", "~/code", "/srv/work", "~/more"], "a repeat adds");
+        assert_eq!(c.projects.skip, ["~/code/js"], "a bare value is a list of one");
+        assert!(c.title, "lines after a list are read as usual");
+    }
+
+    #[test]
+    fn a_broken_project_list_is_reported() {
+        let (c, w) = Config::parse("projects [~/a\n~/b\n");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains("never closed"), "{w:?}");
+        assert!(c.projects.dirs.is_empty());
+        let (_, w) = Config::parse("project-skip [~/a] ~/b\n");
+        assert!(w[0].contains("after `]`"), "{w:?}");
+        let (_, w) = Config::parse("project-roots\n");
+        assert!(w[0].contains("needs a folder"), "{w:?}");
+        // nothing set: the picker lists everything
+        assert_eq!(Config::parse("").0.projects, Projects::default());
     }
 
     #[test]
@@ -464,6 +527,45 @@ mod tests {
 
 /// Drop `# ...` comments: a whole line, or a trailing one preceded by whitespace
 /// so `bind ? help` and a `#` inside a run command's argument survive.
+/// The entries of a list directive: `[a, b]` on one line, or `[` with one
+/// entry per line up to a line holding `]`; entries are split on commas and
+/// line ends, and each line may end in a comment. A bare value is a list of
+/// one. Lines a list spans are taken from `lines`.
+fn list_items<'a>(
+    rest: &str,
+    lines: &mut impl Iterator<Item = (usize, &'a str)>,
+) -> Result<Vec<String>, String> {
+    let Some(open) = rest.strip_prefix('[') else {
+        if rest.is_empty() {
+            return Err("needs a folder, or a [list] of them".into());
+        }
+        return Ok(vec![rest.to_string()]);
+    };
+    let mut body = String::new();
+    let mut line = open.to_string();
+    loop {
+        if let Some((inside, after)) = line.split_once(']') {
+            body.push_str(inside);
+            if !after.trim().is_empty() {
+                return Err(format!("unexpected `{}` after `]`", after.trim()));
+            }
+            break;
+        }
+        body.push_str(&line);
+        body.push('\n');
+        match lines.next() {
+            Some((_, next)) => line = strip_comment(next).to_string(),
+            None => return Err("`[` is never closed with `]`".into()),
+        }
+    }
+    Ok(body
+        .split([',', '\n'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 fn strip_comment(raw: &str) -> &str {
     let t = raw.trim();
     if t.starts_with('#') {

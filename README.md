@@ -21,13 +21,21 @@ What it does not do, by design: splits or a status line inside the terminal. Tho
 
 ## Install
 
+You need [Rust](https://rustup.rs) to build it, and zmx and fzf to run it:
+
 ```sh
 brew install neurosnap/tap/zmx fzf
 git clone https://github.com/rashedInt32/sluice && cd sluice
 scripts/install.sh
 ```
 
-That builds the binary into `~/.cargo/bin`, puts the pickers in `~/.config/sluice/bin`, and writes `~/.config/sluice/config` if you do not have one.
+That builds the binary into `~/.cargo/bin`, puts the pickers in `~/.config/sluice/bin`, and writes `~/.config/sluice/config` if you do not have one. `~/.cargo/bin` has to be on your `PATH`; rustup puts it there, and the installer says so when it is not.
+
+Then type `sluice`. With no sessions yet it opens the project picker: pick a folder and you are in a session named after it, with every prefix key working. The project picker lists every folder under your home until you tell it which ones to show ([Config](#config)).
+
+The Claude keys, `prefix+y` and `prefix+u`, also need the `claude` CLI (Claude Code), and `prefix+u` needs `jq` (`brew install jq`). Everything else works without them.
+
+Running `scripts/install.sh` again upgrades: it rebuilds the binary and refreshes the pickers, and leaves your config alone. A key the config does not mention gets its default, so new keys work after an upgrade without touching it.
 
 ## Use
 
@@ -45,7 +53,7 @@ Default keys, prefix `C-a`:
 | key | action |
 | --- | --- |
 | `f` | pick a session: j/k move, 1-9 jump straight to a row, Enter switch, ctrl-x kill it, ctrl-d free it from the pane holding it, i or / to search, q or Esc back; preview of each screen |
-| `s` | project picker over the directories in `project-dirs` |
+| `s` | project picker: the folders from `sluice projects` |
 | `g` | git worktree picker |
 | `y` | launch, or go back to, the Claude session for this directory |
 | `u` | every running Claude agent on the machine, and the session it is in |
@@ -103,7 +111,22 @@ As in tmux, pressing the prefix twice sends the prefix key itself. So a prefix o
 
 `run` commands get the tty, so they can use fzf themselves. They print the session to attach, and optionally the directory to create it in.
 
-The project picker and the sessionizer read their directories from `~/.config/sluice/bin/project-dirs`. Edit `ROOTS` at the top of it for your own layout; reinstalling never overwrites it.
+The project picker and the sessionizer offer the folders `sluice projects` prints. Out of the box that is every folder under your home, three levels deep, minus hidden folders, `~/Library` and build output. To choose instead, list them in the config; a list is `[a, b]` or one entry per line, and a key given twice adds to its list:
+
+```
+projects [            # folders listed as they are
+  ~/.claude
+]
+project-roots [       # every folder inside these
+  ~/.config
+  ~/code
+]
+project-skip [        # left out
+  ~/code/archive
+]
+```
+
+Worktrees made by the worktree picker, under `~/.worktrees`, are listed either way.
 
 ## Claude agents
 
