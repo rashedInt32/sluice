@@ -29,7 +29,9 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
         with:
-          toolchain: stable
+          # pinned, so a new Rust release and its new lints cannot fail a
+          # push that changed nothing; bump it on purpose
+          toolchain: "1.99.1"
           components: clippy
 
       - name: Install zmx and fzf

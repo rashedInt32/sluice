@@ -220,9 +220,8 @@ fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
     const LO: u64 = 0x0101_0101_0101_0101;
     const HI: u64 = 0x8080_8080_8080_8080;
     let rep = LO * needle as u64;
-    let mut words = hay.chunks_exact(8);
     let mut base = 0;
-    for w in &mut words {
+    while let Some(w) = hay.get(base..base + 8) {
         let x = u64::from_le_bytes(w.try_into().expect("8 bytes")) ^ rep;
         let hit = x.wrapping_sub(LO) & !x & HI;
         if hit != 0 {
@@ -230,8 +229,7 @@ fn memchr(needle: u8, hay: &[u8]) -> Option<usize> {
         }
         base += 8;
     }
-    words
-        .remainder()
+    hay[base..]
         .iter()
         .position(|&b| b == needle)
         .map(|p| base + p)

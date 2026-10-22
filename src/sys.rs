@@ -328,7 +328,9 @@ pub fn signal_pipe() -> io::Result<RawFd> {
         libc::SIGUSR1,
     ] {
         let mut sa: libc::sigaction = unsafe { std::mem::zeroed() };
-        sa.sa_sigaction = on_signal as usize;
+        // through a fn pointer: a function item cast straight to an integer
+        // is linted, as it is easy to do by mistake
+        sa.sa_sigaction = on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
         sa.sa_flags = libc::SA_RESTART;
         unsafe {
             libc::sigemptyset(&mut sa.sa_mask);
