@@ -134,6 +134,32 @@ impl Pty {
 
     /// Read until `needle` shows up or `timeout` passes. Returns everything read.
     fn expect(&self, needle: &str, timeout: Duration) -> String {
+        self.try_expect(needle, timeout).unwrap_or_else(|got| {
+            panic!("did not see {needle:?} within {timeout:?}; got: {got}")
+        })
+    }
+
+    /// Wait for the shell's prompt. zmx can lose a new session's first
+    /// output: it hands a joining client the screen as it stands, then what
+    /// comes after, and a shell quick enough to print in between, one with
+    /// no startup files to read as in CI's empty home, is never shown. Enter
+    /// on the empty command line prints the prompt again.
+    fn prompt(&self) -> String {
+        let mut seen = String::new();
+        for _ in 0..5 {
+            match self.try_expect("$", Duration::from_secs(1)) {
+                Ok(out) => return seen + &out,
+                Err(out) => {
+                    seen += &out;
+                    self.send(b"\r");
+                }
+            }
+        }
+        panic!("no prompt within 5s; got: {seen}");
+    }
+
+    /// As `expect`, with what was read handed back either way.
+    fn try_expect(&self, needle: &str, timeout: Duration) -> Result<String, String> {
         let mut acc = Vec::new();
         let end = Instant::now() + timeout;
         let mut buf = [0u8; 8192];
@@ -151,14 +177,11 @@ impl Pty {
                 }
                 acc.extend_from_slice(&buf[..n as usize]);
                 if String::from_utf8_lossy(&acc).contains(needle) {
-                    return String::from_utf8_lossy(&acc).into_owned();
+                    return Ok(String::from_utf8_lossy(&acc).into_owned());
                 }
             }
         }
-        panic!(
-            "did not see {needle:?} within {timeout:?}; got: {}",
-            String::from_utf8_lossy(&acc)
-        );
+        Err(String::from_utf8_lossy(&acc).into_owned())
     }
 
     fn drain(&self, d: Duration) {
@@ -309,7 +332,7 @@ fn attach_echo_detach_leaves_session_running() {
     }
     let name = uniq("a");
     let p = spawn(&[&name], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"echo marker-$((20+3))\r");
     p.expect("marker-23", Duration::from_secs(5));
     p.wait_clients(&name, Some(1), Duration::from_secs(3));
@@ -331,7 +354,7 @@ fn literal_prefix_reaches_the_program() {
     }
     let name = uniq("b");
     let p = spawn(&[&name], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"stty -echo; cat -v\r");
     p.drain(Duration::from_millis(400));
     p.send(b"\x01\x01\r");
@@ -369,13 +392,13 @@ fn run_binding_switches_and_prev_switches_back() {
 
     // create session a, then detach
     let p = spawn(&[&a], &[("XDG_CONFIG_HOME", xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 
     // attach to b, jump to a through the run binding
     let p = spawn(&[&b], &[("XDG_CONFIG_HOME", xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.wait_clients(&b, Some(1), Duration::from_secs(3));
     p.send(b"\x01j");
     p.wait_clients(&a, Some(1), Duration::from_secs(5));
@@ -403,7 +426,7 @@ fn shell_exit_ends_sluice_and_session() {
     }
     let name = uniq("d");
     let p = spawn(&[&name], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"exit\r");
     p.wait_clients(&name, None, Duration::from_secs(8));
     // With `on-end previous` sluice moves to another live session if there is
@@ -427,7 +450,7 @@ fn window_close_detaches() {
     }
     let name = uniq("e");
     let p = spawn(&[&name], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     unsafe { libc::kill(p.pid, libc::SIGHUP) };
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     p.wait_clients(&name, Some(0), Duration::from_secs(3));
@@ -453,7 +476,7 @@ fn help_overlay_and_picker_draw_then_return() {
     }
     let name = uniq("f");
     let p = spawn(&[&name], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
 
     p.send(b"\x01?");
     p.expect("prefix bindings", Duration::from_secs(5));
@@ -483,12 +506,12 @@ fn resize_reaches_the_session_and_numbered_jump_works() {
     let a = uniq("g1");
     let b = uniq("g2");
     let p = spawn(&[&a], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 
     let p = spawn(&[&b], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
 
     // resize: the terminal changes the master's size and signals us
     let ws = libc::winsize {
@@ -556,7 +579,7 @@ fn kitty_flags_are_neutralised_for_pickers_and_restored_after() {
     }
     let name = uniq("k");
     let p = spawn(&[&name], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     // the program in the session enables the kitty keyboard protocol (flags=1)
     p.send(b"printf '\\033[>1u'\r");
     p.expect("\x1b[>1u", Duration::from_secs(5));
@@ -597,7 +620,7 @@ fn handoff_passes_the_prefix_to_the_program_while_its_pid_lives() {
     let state = std::env::temp_dir().join(format!("sluice-state-{}", std::process::id()));
     let xdg = state.to_str().unwrap().to_string();
     let p = spawn(&[&name], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"stty -echo; cat -v\r");
     p.drain(Duration::from_millis(400));
 
@@ -647,7 +670,7 @@ fn cancelled_picker_exits_three() {
     // a session, so the picker opens
     let s = uniq("cp");
     let p = spawn(&[&s], &[("XDG_CONFIG_HOME", xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     let p = spawn(&[], &[("XDG_CONFIG_HOME", xdg)]);
@@ -666,7 +689,7 @@ fn ctrl_backslash_reaches_the_program_instead_of_detaching() {
     }
     let name = uniq("bs");
     let p = spawn(&[&name], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     // ctrl+\ is also the tty's QUIT character; raw-mode programs (nvim, loom)
     // never see it as a signal, so turn isig off for cat as well.
     p.send(b"stty -echo -isig; cat -v\r");
@@ -698,13 +721,13 @@ fn session_end_moves_to_the_previous_session() {
     let xdg = dir.to_str().unwrap();
 
     let p = spawn(&[&a], &[("XDG_CONFIG_HOME", xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 
     // on b, jump to a (so previous = b), then end a with `exit`
     let p = spawn(&[&b], &[("XDG_CONFIG_HOME", xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01j");
     p.wait_clients(&a, Some(1), Duration::from_secs(5));
     p.drain(Duration::from_millis(300));
@@ -731,7 +754,7 @@ fn on_end_close_exits_instead() {
     std::fs::create_dir_all(dir.join("sluice")).unwrap();
     std::fs::write(dir.join("sluice/config"), "on-end close\n").unwrap();
     let p = spawn(&[&name], &[("XDG_CONFIG_HOME", dir.to_str().unwrap())]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"exit\r");
     assert!(p.wait_exit(Duration::from_secs(8)).is_some());
     let _ = std::fs::remove_dir_all(&dir);
@@ -746,7 +769,7 @@ fn detach_command_reaches_the_client_in_front() {
     let state = std::env::temp_dir().join(format!("sluice-state-dc-{}", std::process::id()));
     let xdg = state.to_str().unwrap().to_string();
     let p = spawn(&[&name], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     let out = sluice_cmd(&["detach", "--session", &name], &xdg);
     assert!(
         out.status.success(),
@@ -776,13 +799,13 @@ fn switch_command_moves_the_pane_from_outside() {
 
     // create a, leave it running
     let p = spawn(&[&a], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 
     // sit on b, then drive the pane to a from another process
     let p = spawn(&[&b], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.wait_clients(&b, Some(1), Duration::from_secs(3));
 
     let out = sluice_cmd(&["switch", &a, "--session", &b], &xdg);
@@ -832,12 +855,12 @@ fn back_to_back_switches_are_not_lost() {
     let xdg = state.to_str().unwrap().to_string();
     for s in [&b, &c] {
         let p = spawn(&[s], &[("XDG_STATE_HOME", &xdg)]);
-        p.expect("$", Duration::from_secs(5));
+        p.prompt();
         p.send(b"\x01d");
         assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     }
     let p = spawn(&[&a], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.wait_clients(&a, Some(1), Duration::from_secs(3));
 
     // Hold the client still so both requests are waiting when it wakes: a
@@ -899,7 +922,7 @@ fn a_run_script_can_name_the_command_a_new_session_starts() {
         &[&host],
         &[("XDG_CONFIG_HOME", dir.to_str().unwrap()), ("PATH", &path)],
     );
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01j");
     p.expect("started-by-run-script", Duration::from_secs(8));
     p.wait_clients(&target, Some(1), Duration::from_secs(5));
@@ -937,12 +960,12 @@ fn the_picker_kills_a_session_and_redraws_without_it() {
     let host = uniq("kp2");
 
     let p = spawn(&[&doomed], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 
     let p = spawn(&[&host], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
 
     p.send(b"\x01f");
     p.expect("sessions", Duration::from_secs(5));
@@ -987,7 +1010,7 @@ fn killing_the_session_you_are_in_falls_back_to_another() {
 
     // `mine` has to exist before anything can switch to it.
     let p = spawn(&[&mine], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 
@@ -995,7 +1018,7 @@ fn killing_the_session_you_are_in_falls_back_to_another() {
     // to fall back to. Without one it would land on whatever else is live,
     // which on a shared machine is not something a test can predict.
     let p = spawn(&[&other], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     let out = sluice_cmd(&["switch", &mine, "--session", &other], &xdg);
     assert!(
         out.status.success(),
@@ -1050,13 +1073,13 @@ fn the_session_picker_opens_on_the_current_session() {
     let second = uniq("pf2");
 
     let p = spawn(&[&first], &[("ZMX_DIR", &z)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     std::thread::sleep(Duration::from_millis(1100)); // a later creation second, so `second` is row 2
 
     let p = spawn(&[&second], &[("ZMX_DIR", &z)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
 
     // open the picker and accept straight away: the cursor must already be on
     // `second`, the session this pane shows, not on `first` at the top
@@ -1117,7 +1140,7 @@ fn windows_open_cycle_and_stay_one_session() {
     let w2 = format!("{s}+2");
     let w3 = format!("{s}+3");
     let p = spawn(&[&s], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
 
     // prefix+c: a second and a third window, each landing on screen
     p.send(b"\x01c");
@@ -1171,7 +1194,7 @@ fn closing_a_window_lands_on_its_sibling_not_another_session() {
     let s = uniq("wsib");
     let w2 = format!("{s}+2");
     let p = spawn(&[&s], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01c");
     p.wait_clients(&w2, Some(1), Duration::from_secs(5));
     p.drain(Duration::from_millis(300));
@@ -1198,7 +1221,7 @@ fn prefix_x_kills_only_the_window_on_screen() {
     let s = uniq("wkill");
     let w2 = format!("{s}+2");
     let p = spawn(&[&s], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01c");
     p.wait_clients(&w2, Some(1), Duration::from_secs(5));
 
@@ -1234,12 +1257,12 @@ fn an_armed_prefix_does_not_survive_a_switch() {
     let xdg = state.to_str().unwrap().to_string();
 
     let p = spawn(&[&a], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01d");
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
 
     let p = spawn(&[&b], &[("XDG_STATE_HOME", &xdg)]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.wait_clients(&b, Some(1), Duration::from_secs(3));
 
     // arm the prefix, then move the pane from outside before the chord key
@@ -1283,7 +1306,7 @@ fn title_on_shows_the_session_and_keeps_programs_from_changing_it() {
     let xdg = cfg.to_str().unwrap().to_string();
 
     let p = spawn(&[&s], &[("XDG_CONFIG_HOME", &xdg)]);
-    let seen = p.expect("$", Duration::from_secs(5));
+    let seen = p.prompt();
     assert!(
         seen.contains(&format!("\x1b]2;{s}\x07")),
         "no title set: {seen:?}"
@@ -1341,7 +1364,7 @@ impl Env {
     /// Start `name` and detach, leaving it running.
     fn make(&self, name: &str) {
         let p = self.spawn(&[name]);
-        p.expect("$", Duration::from_secs(5));
+        p.prompt();
         p.send(b"\x01d");
         assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
         wait_count(name, Some(0));
@@ -1370,7 +1393,7 @@ fn ctrl_c_and_ctrl_backslash_in_a_run_script_reach_only_the_script() {
     let mut env = Env::new("cc", "bind j run read x\n");
     let a = env.session("cc");
     let p = env.spawn(&[&a]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.wait_clients(&a, Some(1), Duration::from_secs(3));
     for key in [b"\x03", b"\x1c"] {
         p.send(b"\x01j");
@@ -1395,7 +1418,7 @@ fn a_new_window_opens_in_a_directory_with_a_space_in_its_name() {
     std::fs::create_dir_all(&dir).unwrap();
     let dir = dir.canonicalize().unwrap();
     let p = env.spawn(&[&s, "-c", dir.to_str().unwrap()]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01c");
     p.wait_clients(&format!("{s}+2"), Some(1), Duration::from_secs(5));
     p.drain(Duration::from_millis(300));
@@ -1424,7 +1447,7 @@ fn a_new_client_ignores_an_inbox_left_under_its_pid() {
         &["-c", &script],
         &[("XDG_CONFIG_HOME", &env.cfg), ("XDG_STATE_HOME", &env.state)],
     );
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.wait_clients(&b, Some(1), Duration::from_secs(3));
     let out = sluice_cmd(&["switch", &a, "--session", &b], &env.state);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -1444,7 +1467,7 @@ fn prefix_0_does_not_bring_back_a_killed_session() {
     let b = env.session("pd2");
     env.make(&a);
     let p = env.spawn(&[&b]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.wait_clients(&b, Some(1), Duration::from_secs(3));
     let out = sluice_cmd(&["switch", &a, "--session", &b], &env.state);
     assert!(out.status.success());
@@ -1508,7 +1531,7 @@ fn a_new_window_zmx_refuses_says_so_and_goes_back() {
     }
     env.sessions.push(name.clone());
     let p = env.spawn(&[&name]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01c");
     p.expect("zmx did not open", Duration::from_secs(5));
     // it waits for the key: not for the dead child's SIGCHLD, nor a resize
@@ -1533,9 +1556,9 @@ fn detach_from_inside_window_1_leaves_window_2s_pane_alone() {
     let x = env.session("dw");
     let x2 = format!("{x}+2");
     let t1 = env.spawn(&[&x]);
-    t1.expect("$", Duration::from_secs(5));
+    t1.prompt();
     let t2 = env.spawn(&[&x2]);
-    t2.expect("$", Duration::from_secs(5));
+    t2.prompt();
     t2.wait_clients(&x2, Some(1), Duration::from_secs(3));
     t1.drain(Duration::from_millis(200));
     t1.send(
@@ -1563,9 +1586,9 @@ fn a_spelled_out_window_1_is_that_window_alone_and_a_stuck_client_fails_detach()
     let x = env.session("w1");
     let x2 = format!("{x}+2");
     let t1 = env.spawn(&[&x]);
-    t1.expect("$", Duration::from_secs(5));
+    t1.prompt();
     let t2 = env.spawn(&[&x2]);
-    t2.expect("$", Duration::from_secs(5));
+    t2.prompt();
     t2.wait_clients(&x2, Some(1), Duration::from_secs(3));
     // `x+1` names window 1, not the session
     let out = sluice_cmd(&["detach", "--session", &format!("{x}+1")], &env.state);
@@ -1590,7 +1613,7 @@ fn prefix_0_returns_to_another_window_of_the_same_session() {
     let a = env.session("pw");
     let a2 = format!("{a}+2");
     let p = env.spawn(&[&a]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01c");
     p.wait_clients(&a2, Some(1), Duration::from_secs(5));
     p.send(b"\x01p");
@@ -1648,7 +1671,7 @@ fn alt_close_bracket_typed_does_not_swallow_the_prefix_after_it() {
     let mut env = Env::new("ab", "");
     let a = env.session("ab");
     let p = env.spawn(&[&a]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     // legacy alt+] is ESC ], the start of an OSC: held, then let go once
     // no rest follows
     p.send(b"\x1b]");
@@ -1665,7 +1688,7 @@ fn a_held_alt_key_settles_while_the_session_prints() {
     let mut env = Env::new("bz", "");
     let a = env.session("bz");
     let p = env.spawn(&[&a]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     // output every 10 ms keeps sluice's loop waking up
     p.send(b"while :; do printf .; sleep 0.01; done &\r");
     std::thread::sleep(Duration::from_millis(300));
@@ -1684,7 +1707,7 @@ fn cut_prefix_detaches(tag: &str, block: bool) -> Option<i32> {
     let mut env = Env::new(tag, "");
     let a = env.session(tag);
     let p = env.spawn(&[&a]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"yes\r");
     let fd = p.master;
     let draining = Arc::new(AtomicBool::new(true));
@@ -1741,7 +1764,7 @@ fn the_window_picker_shows_what_runs_jumps_and_kills_one_window() {
     let w2 = format!("{s}+2");
     let w3 = format!("{s}+3");
     let p = spawn(&[&s], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"\x01c");
     p.wait_clients(&w2, Some(1), Duration::from_secs(5));
     p.send(b"\x01c");
@@ -1811,7 +1834,7 @@ fn a_drag_for_a_button_never_pressed_reaches_the_program_as_motion() {
     // release, and reports every pointer move as a right drag.
     let s = uniq("mouse");
     let p = spawn(&[&s], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     // cat -v shows what arrives; raw, so the reports are not line-edited
     p.send(b"stty raw -echo; cat -v\r");
     p.drain(Duration::from_millis(500));
@@ -1835,7 +1858,7 @@ fn a_background_left_set_does_not_fill_the_next_window() {
     let s = uniq("bce");
     let w2 = format!("{s}+2");
     let p = spawn(&[&s], &[]);
-    p.expect("$", Duration::from_secs(5));
+    p.prompt();
     p.send(b"printf '\\033[48;5;17mBG'; sleep 30\r");
     p.expect("\x1b[48;5;17mBG", Duration::from_secs(5));
     p.drain(Duration::from_millis(300));
