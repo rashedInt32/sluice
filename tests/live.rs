@@ -108,7 +108,8 @@ fn spawn_argv(exe: &str, args: &[&str], env: &[(&str, &str)]) -> Pty {
             &mut master,
             std::ptr::null_mut(),
             std::ptr::null_mut(),
-            &mut ws,
+            // *mut on macOS, *const on Linux: a raw pointer fits both
+            std::ptr::addr_of_mut!(ws),
         )
     };
     assert!(pid >= 0);

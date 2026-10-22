@@ -105,11 +105,13 @@ pub fn spawn_pty(argv: &[&str], cwd: Option<&str>, ws: &libc::winsize) -> io::Re
     let pid = unsafe {
         {
             let mut w = *ws;
+            // A raw pointer: forkpty takes `*mut winsize` on macOS and
+            // `*const winsize` on Linux, and this one fits both.
             libc::forkpty(
                 &mut master,
                 std::ptr::null_mut(),
                 std::ptr::null_mut(),
-                &mut w,
+                std::ptr::addr_of_mut!(w),
             )
         }
     };

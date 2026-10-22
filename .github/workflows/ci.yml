@@ -1,0 +1,79 @@
+# Build, lint and test on Linux and macOS. The live tests drive the real zmx
+# daemon and fzf, so both are installed from their release archives, each
+# checked against its published SHA-256 before it is unpacked. Actions are
+# pinned to commits, not tags, so a moved tag cannot change what runs here.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  ZMX_VERSION: "0.8.1"
+  FZF_VERSION: "0.74.5"
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: stable
+          components: clippy
+
+      - name: Install zmx and fzf
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RUNNER_OS-$(uname -m)" in
+            Linux-x86_64)  zmx=linux-x86_64;  fzf=linux_amd64 ;;
+            Linux-aarch64) zmx=linux-aarch64; fzf=linux_arm64 ;;
+            macOS-arm64)   zmx=macos-aarch64; fzf=darwin_arm64 ;;
+            macOS-x86_64)  zmx=macos-x86_64;  fzf=darwin_amd64 ;;
+            *) echo "no build for $RUNNER_OS $(uname -m)"; exit 1 ;;
+          esac
+          bin="$HOME/.local/bin"
+          mkdir -p "$bin" dl && cd dl
+
+          z="zmx-$ZMX_VERSION-$zmx.tar.gz"
+          curl -fsSLO "https://github.com/neurosnap/zmx/releases/download/v$ZMX_VERSION/$z"
+          curl -fsSLO "https://github.com/neurosnap/zmx/releases/download/v$ZMX_VERSION/$z.sha256"
+          # the .sha256 names a build path; check the hash against our file
+          echo "$(cut -d' ' -f1 "$z.sha256")  $z" | shasum -a 256 -c -
+          tar xzf "$z"
+          install -m 755 "$(find . -type f -name zmx | head -1)" "$bin/zmx"
+
+          f="fzf-$FZF_VERSION-$fzf.tar.gz"
+          curl -fsSLO "https://github.com/junegunn/fzf/releases/download/v$FZF_VERSION/$f"
+          curl -fsSLO "https://github.com/junegunn/fzf/releases/download/v$FZF_VERSION/fzf_${FZF_VERSION}_checksums.txt"
+          grep " $f\$" "fzf_${FZF_VERSION}_checksums.txt" | shasum -a 256 -c -
+          tar xzf "$f"
+          install -m 755 fzf "$bin/fzf"
+
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Versions
+        run: |
+          zmx version
+          fzf --version
+          cargo --version
+
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        # the live tests start a login-free sh in each session
+        env:
+          SHELL: /bin/sh
+        run: cargo test
