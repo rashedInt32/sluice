@@ -13,13 +13,18 @@
 /// zeroed on both screens, main screen, cursor keys normal, cursor visible.
 /// zmx re-enables what the next session actually uses.
 ///
+/// It starts by resetting the colours. The next window's repaint begins with
+/// a clear, and a clear fills with the current background: a background
+/// left set by the window we left (nvim's, say) would fill the new window's
+/// empty space. Leaving the alternate screen clears it too.
+///
 /// The screens are switched with mode 1047, not 1049: 1047 carries the
 /// cursor across and saves nothing. 1049's reset restores the main screen's
 /// saved cursor even when it is already on the main screen, and with no
 /// save that is the top left corner, where the cursor then sat until the
 /// picker drew. Leaving the alternate screen this way clears it, which the
 /// next window's repaint or picker does anyway.
-pub const NEUTRAL: &[u8] = b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[>4;0m\x1b[?1l\x1b[?1047l\x1b[=0;1u\x1b[?1047h\x1b[=0;1u\x1b[?1047l\x1b[?25h";
+pub const NEUTRAL: &[u8] = b"\x1b[0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1004l\x1b[?2004l\x1b[>4;0m\x1b[?1l\x1b[?1047l\x1b[=0;1u\x1b[?1047h\x1b[=0;1u\x1b[?1047l\x1b[?25h";
 
 const FLAG_MASK: u32 = 0b11111;
 const MAX_STACK: usize = 64;

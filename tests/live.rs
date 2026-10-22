@@ -1823,3 +1823,33 @@ fn a_drag_for_a_button_never_pressed_reaches_the_program_as_motion() {
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     kill_session(&s);
 }
+
+#[test]
+fn a_background_left_set_does_not_fill_the_next_window() {
+    if !zmx_present() {
+        return;
+    }
+    // nvim and its plugins leave a background colour set. The next window's
+    // repaint starts with a clear, which fills with the current background.
+    let s = uniq("bce");
+    let w2 = format!("{s}+2");
+    let p = spawn(&[&s], &[]);
+    p.expect("$", Duration::from_secs(5));
+    p.send(b"printf '\\033[48;5;17mBG'; sleep 30\r");
+    p.expect("\x1b[48;5;17mBG", Duration::from_secs(5));
+    p.drain(Duration::from_millis(300));
+    p.send(b"\x01c");
+    let out = p.expect("\x1b[2J", Duration::from_secs(5));
+    let clear = out.rfind("\x1b[2J").unwrap();
+    let reset = out[..clear].rfind("\x1b[0m");
+    let bg = out[..clear].rfind("\x1b[48;5;17m");
+    assert!(
+        reset.is_some() && reset > bg,
+        "colours reset before the repaint's clear"
+    );
+    p.wait_clients(&w2, Some(1), Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    kill_session(&s);
+    kill_session(&w2);
+}
