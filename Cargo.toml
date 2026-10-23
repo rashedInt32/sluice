@@ -1,6 +1,6 @@
 [package]
 name = "sluice"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "tmux-style prefix keys and session switching on top of zmx, with raw PTY passthrough"
 license = "MIT"

@@ -5,8 +5,11 @@
 name: ci
 
 on:
+  # branches only: a tag points at a commit CI has already run
   push:
+    branches: ["**"]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read

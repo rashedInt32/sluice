@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 struct Pty {
     pid: libc::pid_t,
     master: i32,
+    /// the end of what `drain_now` read, for a failure to show
+    tail: std::cell::RefCell<Vec<u8>>,
 }
 
 fn spawn(args: &[&str], env: &[(&str, &str)]) -> Pty {
@@ -123,7 +125,11 @@ fn spawn_argv(exe: &str, args: &[&str], env: &[(&str, &str)]) -> Pty {
             libc::_exit(127);
         }
     }
-    Pty { pid, master }
+    Pty {
+        pid,
+        master,
+        tail: Default::default(),
+    }
 }
 
 impl Pty {
@@ -218,6 +224,10 @@ impl Pty {
             if n <= 0 {
                 return;
             }
+            let mut tail = self.tail.borrow_mut();
+            tail.extend_from_slice(&buf[..n as usize]);
+            let cut = tail.len().saturating_sub(2048);
+            tail.drain(..cut);
         }
     }
 
@@ -233,9 +243,15 @@ impl Pty {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+        // what zmx and the pane looked like, so a failure on a CI machine
+        // says what happened
+        let list = zmx().arg("list").output().unwrap();
         panic!(
-            "session {name}: clients={:?}, wanted {want:?}",
-            clients(name)
+            "session {name}: clients={:?}, wanted {want:?}\n\
+             zmx list:\n{}\npane, last output:\n{:?}",
+            clients(name),
+            String::from_utf8_lossy(&list.stdout),
+            String::from_utf8_lossy(&self.tail.borrow()),
         );
     }
 
