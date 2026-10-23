@@ -26,6 +26,10 @@ const BUF: usize = 64 * 1024;
 /// the next typed key takes tens of milliseconds.
 const SETTLE: std::time::Duration = std::time::Duration::from_millis(50);
 
+/// How often an attach zmx turns away before it says anything is tried
+/// again, waiting 50, 100, 150 ms between, before it counts as a detach.
+const MAX_BOUNCES: u32 = 3;
+
 /// A switch's synchronized update ends once the new window's output has
 /// been quiet this long: zmx sends its repaint in one burst.
 const SYNC_QUIET: std::time::Duration = std::time::Duration::from_millis(15);
@@ -61,6 +65,10 @@ pub struct Runner {
     last_input: std::time::Instant,
     /// how many times a window was attached; the first is the one asked for
     attaches: u32,
+    /// whether the attach client on screen has sent a byte yet
+    attach_spoke: bool,
+    /// attaches in a row that zmx closed before they sent anything
+    bounces: u32,
     /// a synchronized update held open over a switch: when it opened, and
     /// when the new window's output last came. See `open_sync`.
     sync: Option<(std::time::Instant, Option<std::time::Instant>)>,
@@ -128,6 +136,8 @@ impl Runner {
             buttons: mouse::Buttons::default(),
             registration: None,
             attaches: 0,
+            attach_spoke: false,
+            bounces: 0,
             last_input: std::time::Instant::now(),
             sync: None,
         };
@@ -163,6 +173,7 @@ impl Runner {
         let child = sys::spawn_pty(&argv, cwd, &ws)?;
         self.child = Some(child);
         self.attaches += 1;
+        self.attach_spoke = false;
         if self.cfg.title {
             let _ = sys::write_all(STDOUT, &title::set(zmx::window_of(name).0));
         }
@@ -227,6 +238,16 @@ impl Runner {
             // The wait has no end: list again rather than land on a window
             // killed meanwhile, which zmx would make anew.
             return self.land_after_loss(&zmx::list(), 1);
+        }
+        // A client zmx closed before it sent a byte was never let in: an
+        // attach to a window left a moment ago can be turned away while zmx
+        // is still letting go of the client before. Someone detaching us
+        // comes after the window has drawn. Try again, a few times.
+        if alive && !self.attach_spoke && self.bounces < MAX_BOUNCES {
+            self.bounces += 1;
+            std::thread::sleep(std::time::Duration::from_millis(50 * u64::from(self.bounces)));
+            let name = self.current.clone();
+            return self.attach_or_exit(&name, None, None);
         }
         if alive || self.cfg.on_end == OnEnd::Close {
             return Flow::Exit(code);
@@ -514,6 +535,8 @@ impl Runner {
                         }
                     }
                     Ok(n) => {
+                        self.attach_spoke = true;
+                        self.bounces = 0;
                         self.kbd.feed(&buf[..n]);
                         let out = match self.cfg.title {
                             true => self.titles.filter(&buf[..n]),

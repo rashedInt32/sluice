@@ -1906,3 +1906,53 @@ fn a_background_left_set_does_not_fill_the_next_window() {
     kill_session(&s);
     kill_session(&w2);
 }
+
+#[test]
+fn an_attach_zmx_turns_away_is_tried_again() {
+    if !zmx_present() {
+        return;
+    }
+    // Reattaching to a window left a moment ago, zmx can close the new
+    // client before it sends anything, the session alive all along. sluice
+    // used to take that for a detach and exit. A stand-in zmx turns the
+    // first attach away the same way, then hands over to the real one.
+    let s = uniq("bounce");
+    let p = spawn(&[&s], &[]);
+    p.prompt();
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+
+    let real = Command::new("sh")
+        .args(["-c", "command -v zmx"])
+        .output()
+        .unwrap();
+    let real = String::from_utf8_lossy(&real.stdout).trim().to_string();
+    let dir = std::env::temp_dir().join(format!("sluice-bounce-{}", std::process::id()));
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let marker = dir.join("turned-away");
+    let fake = bin.join("zmx");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\n\
+             if [ \"$1\" = attach ] && [ \"$2\" = '{s}' ] && [ ! -e '{m}' ]; then\n\
+             \x20 : > '{m}'; exit 0\n\
+             fi\n\
+             exec '{real}' \"$@\"\n",
+            m = marker.display()
+        ),
+    )
+    .unwrap();
+    Command::new("chmod").arg("+x").arg(&fake).status().unwrap();
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap_or_default());
+
+    let p = spawn(&[&s], &[("PATH", &path)]);
+    p.prompt();
+    assert!(marker.exists(), "the first attach was turned away");
+    p.wait_clients(&s, Some(1), Duration::from_secs(5));
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    kill_session(&s);
+    let _ = std::fs::remove_dir_all(&dir);
+}
