@@ -638,15 +638,25 @@ fn nav_binds(label: &str, accent: &str) -> Vec<String> {
 /// that ran it rather than whichever is first on PATH.
 pub fn run_script(cmd: &str) -> Option<Choice> {
     let exe = std::env::current_exe().unwrap_or_else(|_| "sluice".into());
-    let out = Command::new("sh")
-        .arg("-c")
-        .arg(cmd)
-        .envs([("SLUICE", exe)])
-        .stdin(Stdio::inherit())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .output()
-        .ok()?;
+    let run = |mut c: Command| {
+        c.envs([("SLUICE", &exe)])
+            .stdin(Stdio::inherit())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .output()
+    };
+    // A bare path skips `sh -c`: the shim and the shell behind it are two
+    // execs, ~10 ms of a picker's start on a CPU woken from idle. Anything
+    // the kernel will not run, a script with no #! say, goes to sh as before.
+    let direct = bare_path(cmd).and_then(|p| run(Command::new(p)).ok());
+    let out = match direct {
+        Some(o) => o,
+        None => {
+            let mut sh = Command::new("sh");
+            sh.arg("-c").arg(cmd);
+            run(sh).ok()?
+        }
+    };
     if !out.status.success() {
         return None;
     }
@@ -654,9 +664,54 @@ pub fn run_script(cmd: &str) -> Option<Choice> {
     text.lines().find_map(parse_choice)
 }
 
+/// `cmd` as a path sh would run unchanged: one word with a `/`, nothing sh
+/// would expand or split, and a leading `~/` spelled out as sh would. A word
+/// with no `/` may be a builtin or a keyword, so it stays with sh.
+fn bare_path(cmd: &str) -> Option<std::path::PathBuf> {
+    let cmd = cmd.trim();
+    let plain = |s: &str| {
+        s.contains('/')
+            && s.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/._+-".contains(&b))
+    };
+    match cmd.strip_prefix("~/") {
+        Some(rest) if plain(&format!("/{rest}")) => Some(crate::clients::home().join(rest)),
+        Some(_) => None,
+        None if plain(cmd) => Some(cmd.into()),
+        None => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_plain_path_skips_the_shell() {
+        let home = crate::clients::home();
+        assert_eq!(
+            bare_path("/opt/bin/sessionizer"),
+            Some("/opt/bin/sessionizer".into())
+        );
+        assert_eq!(bare_path(" ./pick-it_2.sh "), Some("./pick-it_2.sh".into()));
+        assert_eq!(
+            bare_path("~/.config/sluice/bin/sessionizer"),
+            Some(home.join(".config/sluice/bin/sessionizer"))
+        );
+        for sh in [
+            "sessionizer",          // PATH, or a builtin
+            "printf 'main\\n'",     // arguments
+            "/opt/bin/pick --flag", // arguments
+            "$HOME/bin/pick",       // expansion
+            "~other/bin/pick",      // another user's home
+            "/opt/bin/pick;rm",     // a list
+            "/opt/bin/p*",          // a glob
+            "FOO=1/bin",            // an assignment
+            "~",                    // home itself
+        ] {
+            assert_eq!(bare_path(sh), None, "{sh}");
+        }
+    }
 
     #[test]
     fn choice_parsing() {

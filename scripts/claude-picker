@@ -13,7 +13,13 @@
 # enter jump, ctrl-x kills the agent, i or / drops into search, q or esc backs
 # out.
 set -uo pipefail
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# This script's folder, without the two subshells and the dirname a
+# `$(cd "$(dirname ...)" && pwd)` costs on every prefix+u.
+case "${BASH_SOURCE[0]}" in
+  */*) DIR="${BASH_SOURCE[0]%/*}" ;;
+  *) DIR=. ;;
+esac
+[[ "$DIR" == /* ]] || DIR="$PWD/$DIR"
 
 [ "${1:-}" = '--list' ] && exec "$DIR/agents"
 
