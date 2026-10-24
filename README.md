@@ -185,6 +185,22 @@ sluice handoff status
 
 While the marker is on and its pid is alive, sluice forwards every key untouched. A dead pid ends the handoff by itself, so a crashed program cannot leave the prefix stuck. loom.nvim does this automatically when `sluice = true`.
 
+## herdr sessions
+
+[herdr](https://herdr.dev) is an agent multiplexer with sessions of its own. sluice can give it one session of its own, so herdr never runs inside your other sessions and both live in the one terminal window:
+
+```sh
+sluice switch herdr:default -c "$PWD"   # herdr's default session; herdr:<name> for a named one
+```
+
+This moves the pane to the sluice session `herdr` (`herdr-<name>` for a named one), creating it in that directory, running herdr, when it is not there yet. While herdr runs there, sluice hands it every key (the handoff above), so `C-a` is herdr's prefix; when you detach from herdr, herdr exits, the session ends and sluice moves you back to the previous one. herdr keeps its own server and agents running after a detach, as tmux does; sluice lists the `herdr` session only while herdr is attached in it.
+
+Bound to a shell function named `herdr`, typing `herdr` in any session takes you to that one herdr session. herdr restores its saved workspaces when it starts and ignores the directory it was started from; `herdr-command` names a launcher that lands on the directory's workspace first:
+
+```
+herdr-command ~/.config/herdr/bin/herdr-at
+```
+
 ## Whole sequences only
 
 The scanner consumes complete input sequences. A sequence split across two reads is held until the rest arrives; if nothing follows within 50 ms it was typed (legacy alt+[ or alt+] send just `ESC [` / `ESC ]`) and goes through as it came. Anything that is not a key press (a key release report, a focus change, a mouse report) is forwarded intact rather than picked apart. Getting this wrong leaks the tail of an escape sequence into the program as literal text: a release report shredded that way reaches Neovim as `97;5:3u`, whose `:` opens the command line and whose digits land in it.

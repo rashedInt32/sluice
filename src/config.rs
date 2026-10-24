@@ -64,6 +64,10 @@ pub struct Config {
     /// What the project picker lists; see `projects.rs`. As written in the
     /// file, `~` not yet expanded.
     pub projects: Projects,
+    /// `herdr-command`: what starts herdr when `sluice switch herdr:<s>`
+    /// creates its session, plain `herdr` when unset. As written, `~` not yet
+    /// expanded.
+    pub herdr_command: Option<String>,
 }
 
 /// The `projects`, `project-roots` and `project-skip` lists. All empty means
@@ -129,6 +133,7 @@ impl Config {
             sessionizer: Some(sessionizer),
             title: false,
             projects: Projects::default(),
+            herdr_command: None,
         }
     }
 
@@ -219,6 +224,11 @@ impl Config {
                     lineno + 1
                 )),
                 "sessionizer" => sessionizer = Some(rest.to_string()),
+                "herdr-command" if rest.is_empty() => warnings.push(format!(
+                    "line {}: `herdr-command` needs a command",
+                    lineno + 1
+                )),
+                "herdr-command" => cfg.herdr_command = Some(rest.to_string()),
                 "unbind" => match parse_key_name(rest) {
                     Some(k) => {
                         cfg.binds.remove(&k);
@@ -506,6 +516,17 @@ mod tests {
         assert_eq!(s("bind s pick"), None);
         let (_, w) = Config::parse("sessionizer");
         assert_eq!(w.len(), 1, "{w:?}");
+    }
+
+    #[test]
+    fn herdr_command_is_read_and_needs_a_value() {
+        assert_eq!(Config::parse("").0.herdr_command, None, "plain herdr by default");
+        let (c, w) = Config::parse("herdr-command ~/.config/herdr/bin/herdr-at");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(c.herdr_command.as_deref(), Some("~/.config/herdr/bin/herdr-at"));
+        let (c, w) = Config::parse("herdr-command");
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert_eq!(c.herdr_command, None);
     }
 
     #[test]

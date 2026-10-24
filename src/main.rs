@@ -1,6 +1,7 @@
 mod clients;
 mod config;
 mod handoff;
+mod herdr;
 mod kbd;
 mod keys;
 mod mouse;
@@ -34,6 +35,8 @@ usage:
                                       window named as <session>+<n>
   sluice switch <name>|- [--session S] move the pane showing this session to <name>,
                                       or back to the previous one with `-`
+  sluice switch herdr:<s> [-c <dir>]  move it to herdr session <s>'s sluice session,
+                                      created running herdr (in <dir>) if missing
   sluice detach [--session S]         detach the client showing this window, or
                                       every client on session S's windows
                                       (the window closes under the shell snippet)
@@ -382,9 +385,21 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
     let mut session = zmx_session_env();
     let mut explicit = false;
     let mut target: Option<String> = None;
+    let mut dir: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            // `switch herdr:<s> -c DIR`: where a herdr session starts
+            "-c" if verb == "switch" => {
+                dir = match flag_value(args, i) {
+                    Ok(v) => Some(v),
+                    Err(e) => {
+                        eprintln!("sluice: {verb}: {e}");
+                        return 2;
+                    }
+                };
+                i += 2;
+            }
             "--session" => {
                 session = match flag_value(args, i) {
                     Ok(v) => Some(v),
@@ -427,6 +442,13 @@ fn control_cmd(verb: &str, args: &[String]) -> i32 {
     let session = canonical_window(session, &live);
     let cmd = match (verb, &target) {
         ("switch", Some(t)) if t == "-" => "prev".to_string(),
+        // A herdr session (`herdr:<name>`): the pane goes to its sluice
+        // session, which is created running herdr when it does not exist
+        // yet, in DIR when given. Nothing to check: it may not exist yet.
+        ("switch", Some(t)) if herdr::is_tag(t) => match &dir {
+            Some(d) => format!("switch {t}\t{d}"),
+            None => format!("switch {t}"),
+        },
         ("switch", Some(t)) => {
             // A session (any of its windows alive) or one explicit window.
             let t = &zmx::typed_name(t, &live);

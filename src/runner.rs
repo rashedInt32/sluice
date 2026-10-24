@@ -670,7 +670,18 @@ impl Runner {
             None => (cmd, ""),
         };
         match verb {
-            "switch" if !arg.is_empty() => self.switch_to(Choice::named(arg)),
+            // `herdr:<session>` starts that herdr session here (the zsh `herdr`)
+            "switch" if !arg.is_empty() => {
+                // `switch NAME`, or `switch herdr:<s><TAB>DIR` from `sluice
+                // switch -c DIR`: a herdr session created starts in DIR
+                let (name, dir) = match arg.split_once('\t') {
+                    Some((n, d)) => (n, Some(d.to_string())),
+                    None => (arg, None),
+                };
+                let dir = dir.or_else(|| self.dir_of_current(&zmx::list()));
+                let c = crate::herdr::choice(name, self.cfg.herdr_command.as_deref(), dir);
+                self.switch_to(c)
+            }
             "prev" => self.switch_prev(),
             "detach" => {
                 self.detach();
@@ -885,6 +896,14 @@ impl Runner {
             self.previous = None;
             Flow::Continue
         }
+    }
+
+    /// The directory of the window on screen, from a `zmx list`.
+    fn dir_of_current(&self, live: &[Session]) -> Option<String> {
+        live.iter()
+            .find(|s| s.name == self.current)
+            .map(|s| s.dir.clone())
+            .filter(|d| !d.is_empty())
     }
 
     fn switch_to(&mut self, c: Choice) -> Flow {
