@@ -2087,3 +2087,58 @@ fn killing_the_session_on_screen_from_the_sidebar_lands_elsewhere() {
     assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
     kill_session(&a);
 }
+
+#[test]
+fn run_scripts_and_new_windows_start_where_the_shell_is_now() {
+    if !zmx_present() {
+        return;
+    }
+    let s = uniq("cwd");
+    let base = std::env::temp_dir().join(format!("sluice-cwd-{}", std::process::id()));
+    let moved = base.join("moved here");
+    std::fs::create_dir_all(&moved).unwrap();
+    std::fs::create_dir_all(base.join("cfg/sluice")).unwrap();
+    let out = base.join("seen");
+    let script = base.join("where");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\nprintf '%s|%s\\n' \"$PWD\" \"$(pwd -P)\" > '{}'\n", out.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(
+        base.join("cfg/sluice/config"),
+        format!("bind j run {}\n", script.display()),
+    )
+    .unwrap();
+
+    // sluice starts in base; the shell then moves on
+    let p = spawn(&[&s, "-c", base.to_str().unwrap()], &[("XDG_CONFIG_HOME", base.join("cfg").to_str().unwrap())]);
+    p.prompt();
+    p.send(format!("cd '{}'\r", moved.display()).as_bytes());
+    p.prompt();
+    p.send(b"\x01j");
+    let end = Instant::now() + Duration::from_secs(5);
+    while !out.exists() && Instant::now() < end {
+        p.drain(Duration::from_millis(100));
+    }
+    let seen = std::fs::read_to_string(&out).expect("the script ran");
+    let real = moved.canonicalize().unwrap();
+    let (pwd, phys) = seen.trim_end().split_once('|').unwrap();
+    assert_eq!(std::path::Path::new(pwd).canonicalize().unwrap(), real, "$PWD: {seen}");
+    assert_eq!(std::path::Path::new(phys), real, "cwd: {seen}");
+
+    // a new window opens there too
+    p.drain(Duration::from_millis(300));
+    p.send(b"\x01c");
+    p.wait_clients(&format!("{s}+2"), Some(1), Duration::from_secs(5));
+    p.prompt();
+    p.send(b"pwd -P; echo pwd-$((1+1))\r");
+    let shown = p.expect("pwd-2", Duration::from_secs(5));
+    assert!(shown.contains(real.to_str().unwrap()), "{shown}");
+
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    let _ = sluice().args(["kill", &s]).output();
+    let _ = std::fs::remove_dir_all(&base);
+}

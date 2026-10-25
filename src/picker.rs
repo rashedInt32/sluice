@@ -635,10 +635,17 @@ fn nav_binds(label: &str, accent: &str) -> Vec<String> {
 
 /// Run a user script with the tty attached; parse its first stdout line.
 /// `$SLUICE` names this binary, so a script can call back into the sluice
-/// that ran it rather than whichever is first on PATH.
-pub fn run_script(cmd: &str) -> Option<Choice> {
+/// that ran it rather than whichever is first on PATH. `dir`, the window's
+/// directory, is the script's working directory and `$PWD`; one that is gone
+/// leaves both as sluice's own.
+pub fn run_script(cmd: &str, dir: Option<&str>) -> Option<Choice> {
     let exe = std::env::current_exe().unwrap_or_else(|_| "sluice".into());
+    let dir = dir.filter(|d| std::path::Path::new(d).is_dir());
     let run = |mut c: Command| {
+        if let Some(d) = dir {
+            c.current_dir(d);
+            c.env("PWD", d);
+        }
         c.envs([("SLUICE", &exe)])
             .stdin(Stdio::inherit())
             .stdout(Stdio::piped())

@@ -408,6 +408,43 @@ pub fn tty_foreground(pid: u32) -> Option<u32> {
     (tpgid > 0).then_some(tpgid as u32)
 }
 
+/// The working directory of `pid`: where a shell is after its last `cd`.
+/// None when it is gone, not ours to read, or not UTF-8.
+#[cfg(target_os = "macos")]
+pub fn proc_cwd(pid: u32) -> Option<String> {
+    let mut info: libc::proc_vnodepathinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_vnodepathinfo>() as libc::c_int;
+    let n = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDVNODEPATHINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    if n != size {
+        return None;
+    }
+    let path = &info.pvi_cdir.vip_path;
+    // MAXPATHLEN bytes, NUL-terminated, declared as rows of 32 by libc
+    let raw = unsafe {
+        std::slice::from_raw_parts(path.as_ptr() as *const u8, std::mem::size_of_val(path))
+    };
+    let end = raw.iter().position(|&b| b == 0)?;
+    std::str::from_utf8(&raw[..end])
+        .ok()
+        .filter(|p| p.starts_with('/'))
+        .map(str::to_string)
+}
+
+/// As above, from `/proc/<pid>/cwd`.
+#[cfg(not(target_os = "macos"))]
+pub fn proc_cwd(pid: u32) -> Option<String> {
+    let p = std::fs::read_link(format!("/proc/{pid}/cwd")).ok()?;
+    p.to_str().filter(|p| p.starts_with('/')).map(str::to_string)
+}
+
 /// The arguments `pid` was started with, argv[0] first. None when it is gone
 /// or not ours to read.
 #[cfg(target_os = "macos")]

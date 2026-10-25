@@ -711,7 +711,7 @@ fn pick_or_sessionize(cfg: &Config, live: &[zmx::Session]) -> Option<picker::Cho
         }
         let _ = leave();
     }
-    let choice = picker::run_script(cfg.sessionizer.as_deref()?);
+    let choice = picker::run_script(cfg.sessionizer.as_deref()?, None);
     if choice.is_none() {
         // the bundled sessionizer keeps its frame too, under sluice
         let _ = leave();

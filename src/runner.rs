@@ -727,11 +727,7 @@ impl Runner {
                     return Flow::Continue;
                 };
                 // The new window starts where the one on screen is now.
-                let dir = live
-                    .iter()
-                    .find(|s| s.name == self.current)
-                    .map(|s| s.dir.clone())
-                    .filter(|d| !d.is_empty());
+                let dir = self.dir_of_current(&live);
                 // The name may be one a killed window had; its flags are not
                 // the new shell's.
                 self.kbd_saved.remove(&name);
@@ -765,7 +761,10 @@ impl Runner {
                 self.finish_window(pick)
             }
             Action::Run(cmd) => {
-                let choice = self.with_tty(false, || picker::run_script(&cmd));
+                // in the window's directory, not sluice's own: the worktree
+                // picker and claude-here read $PWD
+                let dir = self.dir_of_current(&zmx::list());
+                let choice = self.with_tty(false, || picker::run_script(&cmd, dir.as_deref()));
                 self.finish_switch(choice)
             }
             Action::Sidebar => self.sidebar(),
@@ -1056,12 +1055,16 @@ impl Runner {
         }
     }
 
-    /// The directory of the window on screen, from a `zmx list`.
+    /// Where the window on screen is now: the directory of the program in
+    /// its foreground (the shell after its last `cd`, nvim, an agent), else
+    /// the shell's own, else what `zmx list` last heard, which is where the
+    /// window started unless the shell reports its moves.
     fn dir_of_current(&self, live: &[Session]) -> Option<String> {
-        live.iter()
-            .find(|s| s.name == self.current)
-            .map(|s| s.dir.clone())
-            .filter(|d| !d.is_empty())
+        let s = live.iter().find(|s| s.name == self.current)?;
+        sys::tty_foreground(s.pid)
+            .and_then(sys::proc_cwd)
+            .or_else(|| sys::proc_cwd(s.pid))
+            .or_else(|| Some(s.dir.clone()).filter(|d| !d.is_empty()))
     }
 
     fn switch_to(&mut self, c: Choice) -> Flow {
