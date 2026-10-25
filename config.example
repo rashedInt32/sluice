@@ -40,6 +40,7 @@ bind c new-window                             # new window in this session
 bind n next-window                            # next window, wrapping
 bind p prev-window                            # previous window, wrapping
 bind w pick-window                            # this session's windows, with what each one runs
+bind b sidebar                                # sessions panel over the right edge, agent states
 bind 0 prev                                   # previous session
 bind 1 jump 1                                 # sessions numbered in creation order
 bind 2 jump 2

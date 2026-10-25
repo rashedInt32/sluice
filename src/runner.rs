@@ -11,9 +11,11 @@ use crate::clients;
 use crate::config::{Action, Config, OnEnd};
 use crate::handoff;
 use crate::kbd::{KittyState, NEUTRAL};
-use crate::keys::{Event, Key, Scanner};
+use crate::keys::{self, Event, Key, Scanner};
 use crate::mouse;
 use crate::picker::{self, Choice};
+use crate::procs;
+use crate::sidebar;
 use crate::sys::{self, Child, RawMode, STDIN, STDOUT};
 use crate::title;
 use crate::zmx::{self, Session};
@@ -36,6 +38,10 @@ const SYNC_QUIET: std::time::Duration = std::time::Duration::from_millis(15);
 /// and in any case this long after it opened, so a window that never goes
 /// quiet, or never draws, cannot hold the screen.
 const SYNC_CAP: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// How often an open sidebar reads the sessions and their agents again.
+/// Closed, it costs nothing.
+const SIDEBAR_REFRESH: std::time::Duration = std::time::Duration::from_secs(1);
 
 pub struct Runner {
     cfg: Config,
@@ -762,6 +768,7 @@ impl Runner {
                 let choice = self.with_tty(false, || picker::run_script(&cmd));
                 self.finish_switch(choice)
             }
+            Action::Sidebar => self.sidebar(),
             Action::Help => {
                 let lines: Vec<String> = self
                     .cfg
@@ -796,6 +803,157 @@ impl Runner {
                 self.land_after_loss(&live, 0)
             }
         }
+    }
+
+    /// The sidebar's rows for a fresh `zmx list`.
+    fn sidebar_rows(&self, live: &[Session]) -> Vec<sidebar::Row> {
+        sidebar::rows(&zmx::groups(live), &self.current, &procs::of_all(live))
+    }
+
+    /// prefix+b. The panel draws over the screen as it is: the window stays
+    /// attached, but its output is read and held back (its keyboard modes
+    /// still tracked), so nothing moves under the panel. Closing goes the
+    /// way a picker does: detach, then attach the session picked or the same
+    /// window again, whose repaint covers the panel in one frame.
+    fn sidebar(&mut self) -> Flow {
+        let toggles: Vec<Key> = self
+            .cfg
+            .binds
+            .iter()
+            .filter(|(_, a)| **a == Action::Sidebar)
+            .map(|(k, _)| *k)
+            .collect();
+        let mut panel = sidebar::Panel::new(self.sidebar_rows(&zmx::list()), self.cfg.prefix, toggles);
+        let size = |ws: libc::winsize| (ws.ws_col as usize, ws.ws_row as usize);
+        let (mut cols, mut lines) = size(sys::winsize(STDOUT));
+        let frame = panel.draw(cols, lines);
+        if frame.is_empty() {
+            return Flow::Continue; // a screen too small for it
+        }
+        self.close_sync();
+        let mut out = [picker::SYNC_BEGIN, sidebar::HIDE_CURSOR, &frame, picker::SYNC_END].concat();
+        let mut buf = vec![0u8; BUF];
+        let mut next_refresh = std::time::Instant::now() + SIDEBAR_REFRESH;
+        // typed after the key that closed the panel, in the same read
+        let mut rest = Vec::new();
+        let choice = 'open: loop {
+            if !out.is_empty() {
+                let _ = sys::write_all(STDOUT, &out);
+                out.clear();
+            }
+            let master = self.child.as_ref().map_or(-1, |c| c.master);
+            let left = next_refresh.saturating_duration_since(std::time::Instant::now());
+            let ready = match sys::poll_readable([STDIN, master, self.sig_fd], left.as_millis() as i32) {
+                Ok(m) => m,
+                Err(_) => return Flow::Exit(1),
+            };
+            let mut redraw = false;
+            if std::time::Instant::now() >= next_refresh {
+                redraw |= panel.set_rows(self.sidebar_rows(&zmx::list()));
+                next_refresh = std::time::Instant::now() + SIDEBAR_REFRESH;
+            }
+            if ready & 0b100 != 0 {
+                let sigs = sys::drain_signals(self.sig_fd);
+                let mut kept = Vec::new();
+                for (i, &sig) in sigs.iter().enumerate() {
+                    match sig {
+                        libc::SIGWINCH => {
+                            if let Some(c) = &self.child {
+                                sys::set_winsize(c.master, &sys::winsize(STDOUT));
+                            }
+                            (cols, lines) = size(sys::winsize(STDOUT));
+                            redraw = true;
+                        }
+                        libc::SIGCHLD => {
+                            let Some((pid, m)) = self.child.as_ref().map(|c| (c.pid, c.master)) else {
+                                continue;
+                            };
+                            if let Some(code) = sys::try_wait(pid) {
+                                self.child = None;
+                                sys::close(m);
+                                if let Some(flow) = self.sidebar_lost_child(code) {
+                                    sys::repost_signals(&kept);
+                                    sys::repost_signals(&sigs[i + 1..]);
+                                    return flow;
+                                }
+                                panel.set_rows(self.sidebar_rows(&zmx::list()));
+                                redraw = true;
+                            }
+                        }
+                        // a switch request, a hangup: close, and let the main
+                        // loop take them with a window on screen
+                        s => kept.push(s),
+                    }
+                }
+                if !kept.is_empty() {
+                    sys::repost_signals(&kept);
+                    break 'open None;
+                }
+            }
+            if ready & 0b010 != 0 && master >= 0 {
+                match sys::read(master, &mut buf) {
+                    Ok(0) | Err(_) => {
+                        let code = self.reap_code();
+                        if let Some(flow) = self.sidebar_lost_child(code) {
+                            return flow;
+                        }
+                        panel.set_rows(self.sidebar_rows(&zmx::list()));
+                        redraw = true;
+                    }
+                    Ok(n) => {
+                        // held back: the repaint on close shows it
+                        self.attach_spoke = true;
+                        self.kbd.feed(&buf[..n]);
+                    }
+                }
+            }
+            if ready & 0b001 != 0 {
+                let n = match sys::read(STDIN, &mut buf) {
+                    Ok(0) | Err(_) => {
+                        self.detach();
+                        return Flow::Exit(0);
+                    }
+                    Ok(n) => n,
+                };
+                self.last_input = std::time::Instant::now();
+                for (k, end) in keys::nav_keys(&buf[..n]) {
+                    match panel.key(k) {
+                        sidebar::Step::Stay => {}
+                        sidebar::Step::Redraw => redraw = true,
+                        sidebar::Step::Close(c) => {
+                            rest = buf[end..n].to_vec();
+                            break 'open c;
+                        }
+                        sidebar::Step::Kill(group) => {
+                            zmx::kill_target(&group, &zmx::list());
+                            panel.set_rows(self.sidebar_rows(&zmx::list()));
+                            redraw = true;
+                        }
+                    }
+                }
+            }
+            if redraw {
+                out = [picker::SYNC_BEGIN, &panel.draw(cols, lines), picker::SYNC_END].concat();
+            }
+        };
+        self.detach();
+        match self.finish_switch(choice.map(Choice::named)) {
+            Flow::Continue if !rest.is_empty() => self.on_input(&rest),
+            flow => flow,
+        }
+    }
+
+    /// The attach client ended while the sidebar was open. Its window gone
+    /// (killed from the panel, its shell exited) with other sessions left,
+    /// the panel stays: closing it lands where `finish_switch` decides.
+    /// Anything else (detached from outside, the last session gone) is the
+    /// main loop's usual exit path.
+    fn sidebar_lost_child(&mut self, code: i32) -> Option<Flow> {
+        let live = zmx::list();
+        if !live.is_empty() && !live.iter().any(|s| s.name == self.current) {
+            return None;
+        }
+        Some(self.after_child_exit(code))
     }
 
     /// Detach, give the tty back in cooked mode, run `f`, take the tty again.

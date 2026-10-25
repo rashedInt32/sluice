@@ -10,21 +10,21 @@ use std::process::{Command, Stdio};
 
 // glass's prism palette (glass/hooks/palette.ts), copied by role. Orange marks
 // focus: the list box in nav mode, the prompt and its label in search mode.
-const ORANGE: &str = "#ff9f1a"; // heading3
-const BLUE: &str = "#4d96ff"; // cmd: keys in the hints, a working agent
-const CYAN: &str = "#4eb4d3"; // str: search matches, an agent's shell
-const GREEN: &str = "#32ff7e"; // ok: the session you are in, an idle agent
-const YELLOW: &str = "#fff200"; // warn: an agent waiting on you
-const TEXT: &str = "#dcdcdc"; // calloutText: session names
-const WHITE: &str = "#ffffff"; // bold: the row under the cursor
-const META: &str = "#9a9a9a"; // paths, counts
-const NUM: &str = "#8a8a8a"; // orderedNum: row numbers
-const FAINT: &str = "#6c6c6c"; // idle input box, hint words
-const RULE: &str = "#565656"; // preview box
-const ROW_BG: &str = "#0e2a3a"; // rowHover
+pub(crate) const ORANGE: &str = "#ff9f1a"; // heading3
+pub(crate) const BLUE: &str = "#4d96ff"; // cmd: keys in the hints, a working agent
+pub(crate) const CYAN: &str = "#4eb4d3"; // str: search matches, an agent's shell
+pub(crate) const GREEN: &str = "#32ff7e"; // ok: the session you are in, an idle agent
+pub(crate) const YELLOW: &str = "#fff200"; // warn: an agent waiting on you
+pub(crate) const TEXT: &str = "#dcdcdc"; // calloutText: session names
+pub(crate) const WHITE: &str = "#ffffff"; // bold: the row under the cursor
+pub(crate) const META: &str = "#9a9a9a"; // paths, counts
+pub(crate) const NUM: &str = "#8a8a8a"; // orderedNum: row numbers
+pub(crate) const FAINT: &str = "#6c6c6c"; // idle input box, hint words
+pub(crate) const RULE: &str = "#565656"; // preview box
+pub(crate) const ROW_BG: &str = "#0e2a3a"; // rowHover
 
 /// `s` in a 24-bit colour, then reset.
-fn paint(hex: &str, bold: bool, s: &str) -> String {
+pub(crate) fn paint(hex: &str, bold: bool, s: &str) -> String {
     let ch = |i: usize| u8::from_str_radix(&hex[1 + 2 * i..3 + 2 * i], 16).unwrap_or(0);
     let b = if bold { "1;" } else { "" };
     format!("\x1b[{b}38;2;{};{};{}m{s}\x1b[0m", ch(0), ch(1), ch(2))
@@ -181,11 +181,11 @@ fn programs(g: &Group, running: &HashMap<String, Running>) -> (String, usize) {
 
 /// Claude's own glyph, so an agent's mark never reads as the green dot of the
 /// session you are in.
-const AGENT_MARK: &str = "✻";
+pub(crate) const AGENT_MARK: &str = "✻";
 
 /// The agent picker's colours: waiting needs you, idle is done, working is
 /// busy rather than failed.
-fn agent_colour(status: &str) -> &'static str {
+pub(crate) fn agent_colour(status: &str) -> &'static str {
     match status {
         "waiting" => YELLOW,
         "idle" => GREEN,
@@ -196,7 +196,7 @@ fn agent_colour(status: &str) -> &'static str {
 }
 
 /// `waiting`, `idle`, `working` for busy, else as Claude spells it.
-fn agent_word(status: &str) -> String {
+pub(crate) fn agent_word(status: &str) -> String {
     match status {
         "busy" => "working".into(),
         s => printable(s).into_owned(),
@@ -306,7 +306,7 @@ pub fn now_ms() -> u64 {
 /// `current` names a window of `g` (or `g` itself).
 /// A name or path from `zmx list` as drawn: zmx takes any name, and fzf
 /// would read an escape in it as colour and count it toward the width.
-fn printable(s: &str) -> std::borrow::Cow<'_, str> {
+pub(crate) fn printable(s: &str) -> std::borrow::Cow<'_, str> {
     match s.chars().any(char::is_control) {
         true => s.chars().map(|c| if c.is_control() { '_' } else { c }).collect(),
         false => s.into(),

@@ -34,6 +34,8 @@ pub enum Action {
     PrevWindow,
     /// fzf over this session's windows, with what each one runs
     PickWindow,
+    /// the sessions as a panel over the right edge, agent states and all
+    Sidebar,
     /// show bindings
     Help,
     /// run a shell command that prints `name[<TAB>dir]`; attach to that session
@@ -124,6 +126,8 @@ impl Config {
         binds.insert(Key::Char('p'), Action::PrevWindow);
         // tmux's choose-window
         binds.insert(Key::Char('w'), Action::PickWindow);
+        // herdr's toggle_sidebar
+        binds.insert(Key::Char('b'), Action::Sidebar);
         binds.insert(Key::Char('?'), Action::Help);
         binds.insert(Key::Ctrl('a'), Action::Literal);
         Config {
@@ -311,6 +315,7 @@ fn parse_action(s: &str) -> Option<Action> {
         "next-window" => Some(Action::NextWindow),
         "prev-window" => Some(Action::PrevWindow),
         "pick-window" => Some(Action::PickWindow),
+        "sidebar" => Some(Action::Sidebar),
         "help" => Some(Action::Help),
         "run" => Some(Action::Run(arg.to_string())),
         _ => None,
@@ -341,6 +346,7 @@ fn describe_action(a: &Action) -> String {
         Action::NextWindow => "next window".into(),
         Action::PrevWindow => "previous window".into(),
         Action::PickWindow => "pick a window of this session".into(),
+        Action::Sidebar => "sessions panel, agent states".into(),
         Action::Help => "this list".into(),
         Action::Run(cmd) => format!("run {}", tilde(cmd)),
     }
@@ -362,6 +368,8 @@ mod tests {
         assert_eq!(c.binds[&Key::Char('n')], Action::NextWindow);
         assert_eq!(c.binds[&Key::Char('p')], Action::PrevWindow);
         assert_eq!(c.binds[&Key::Char('w')], Action::PickWindow);
+        assert_eq!(c.binds[&Key::Char('b')], Action::Sidebar);
+        assert_eq!(Config::parse("bind e sidebar\n").0.binds[&Key::Char('e')], Action::Sidebar);
     }
 
     #[test]

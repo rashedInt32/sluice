@@ -1956,3 +1956,134 @@ fn an_attach_zmx_turns_away_is_tried_again() {
     kill_session(&s);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// What one read of a pane holds, for the sidebar test's checks.
+fn read_for(p: &Pty, d: Duration) -> String {
+    let end = Instant::now() + d;
+    let mut acc = Vec::new();
+    let mut buf = [0u8; 8192];
+    while Instant::now() < end {
+        let mut fd = libc::pollfd {
+            fd: p.master,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        if unsafe { libc::poll(&mut fd, 1, 50) } > 0 {
+            let n = unsafe { libc::read(p.master, buf.as_mut_ptr() as *mut _, buf.len()) };
+            if n <= 0 {
+                break;
+            }
+            acc.extend_from_slice(&buf[..n as usize]);
+        }
+    }
+    String::from_utf8_lossy(&acc).into_owned()
+}
+
+#[test]
+fn the_sidebar_floats_over_the_screen_holds_output_and_switches() {
+    if !zmx_present() {
+        return;
+    }
+    let a = uniq("sb1");
+    let b = uniq("sb2");
+    let p = spawn(&[&a], &[]);
+    p.prompt();
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    let p = spawn(&[&b], &[]);
+    p.prompt();
+
+    // output that lands while the panel is open
+    p.send(b"sleep 1; echo held-$((6*7))\r");
+    p.drain(Duration::from_millis(200));
+    let t = Instant::now();
+    p.send(b"\x01b");
+    let frame = p.expect("╰", Duration::from_secs(3));
+    let opened = t.elapsed();
+    assert!(frame.contains(" sessions "), "{frame:?}");
+    assert!(frame.contains(&a) && frame.contains(&b), "both sessions listed: {frame:?}");
+    assert!(frame.contains("\x1b[?25l"), "the cursor hides");
+    for clear in ["\x1b[2J", "\x1b[?1049h", "\x1b[?1047h", "\r\n"] {
+        assert!(!frame.contains(clear), "the screen under it is left alone: {clear:?} in {frame:?}");
+    }
+
+    // the echo comes due while the panel is up: held back, keys stay ours
+    let during = read_for(&p, Duration::from_millis(1500));
+    assert!(!during.contains("held-42"), "output held while open: {during:?}");
+    p.send(b"zz");
+    let t = Instant::now();
+    p.send(b"q");
+    let back = p.expect("held-42", Duration::from_secs(3));
+    let closed = t.elapsed();
+    assert!(back.contains("\x1b[?25h"), "the cursor comes back");
+    p.send(b"echo after-$((2+3))\r");
+    let out = p.expect("after-5", Duration::from_secs(3));
+    assert!(!out.contains("zzecho"), "panel keys never reached the shell: {out:?}");
+
+    // Enter on a's row (session 1, below the cursor's b) switches there
+    p.send(b"\x01b");
+    p.expect("╰", Duration::from_secs(3));
+    p.send(b"1");
+    p.wait_clients(&a, Some(1), Duration::from_secs(5));
+    p.wait_clients(&b, Some(0), Duration::from_secs(5));
+    assert_eq!(pane_window(&p, "sb"), a);
+
+    // prefix+b closes it again, as it opened
+    p.send(b"\x01b");
+    p.expect("╰", Duration::from_secs(3));
+    p.send(b"\x01b");
+    p.send(b"echo closed-$((1+1))\r");
+    p.expect("closed-2", Duration::from_secs(3));
+
+    // x then y kills the session under the cursor; the panel stays open
+    p.send(b"\x01b");
+    p.expect("╰", Duration::from_secs(3));
+    p.send(b"j");
+    p.drain(Duration::from_millis(200));
+    p.send(b"x");
+    p.expect("y/n", Duration::from_secs(3));
+    p.send(b"y");
+    wait_count(&b, None);
+    // Esc alone, as a terminal sends it: ESC and `e` together are alt+e
+    p.send(b"\x1b");
+    p.drain(Duration::from_millis(300));
+    p.send(b"echo alive-$((3+4))\r");
+    p.expect("alive-7", Duration::from_secs(3));
+
+    eprintln!("sidebar open {opened:?}, close to repaint {closed:?}");
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    kill_session(&a);
+}
+
+#[test]
+fn killing_the_session_on_screen_from_the_sidebar_lands_elsewhere() {
+    if !zmx_present() {
+        return;
+    }
+    let a = uniq("sk1");
+    let b = uniq("sk2");
+    let p = spawn(&[&a], &[]);
+    p.prompt();
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    let p = spawn(&[&b], &[]);
+    p.prompt();
+
+    // the panel opens on b, the session you are in
+    p.send(b"\x01b");
+    p.expect("╰", Duration::from_secs(3));
+    p.send(b"x");
+    p.expect("y/n", Duration::from_secs(3));
+    p.send(b"y");
+    wait_count(&b, None);
+    // the panel outlives its window; closing it lands on a
+    p.drain(Duration::from_millis(300));
+    p.send(b"q");
+    p.wait_clients(&a, Some(1), Duration::from_secs(5));
+    assert_eq!(pane_window(&p, "sk"), a);
+
+    p.send(b"\x01d");
+    assert_eq!(p.wait_exit(Duration::from_secs(5)), Some(0));
+    kill_session(&a);
+}

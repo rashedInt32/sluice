@@ -9,6 +9,7 @@ mod picker;
 mod procs;
 mod projects;
 mod runner;
+mod sidebar;
 mod sys;
 mod title;
 mod zmx;

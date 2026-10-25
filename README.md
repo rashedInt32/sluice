@@ -17,6 +17,8 @@ What this gives you compared to tmux:
 
 Windows work like tmux's, without a tab bar: `prefix+c` opens one, `prefix+n` and `prefix+p` move between them, `prefix+w` lists them with what each one runs, and only the one you are on is drawn. A window fills the whole pane, so switching is the same raw-byte handoff as switching session and nothing is lost on the way.
 
+`prefix+b` floats a sessions panel over the right edge, herdr-style, with each session's Claude state. Nothing shifts: it draws over the screen as it stands, and zmx's repaint takes it away.
+
 What it does not do, by design: splits or a status line inside the terminal. Those need a screen model again. Use your terminal's splits, and put the session name in your prompt (`$ZMX_SESSION`).
 
 ## Install
@@ -60,6 +62,7 @@ Default keys, prefix `C-a`:
 | `c` | new window in this session, in the same directory |
 | `n` / `p` | next / previous window of this session, wrapping |
 | `w` | pick a window of this session: each row shows what it runs, 1-9 jump, Enter switch, ctrl-x kill that window, q or Esc back; preview of each screen |
+| `b` | sessions panel over the right edge, with each one's Claude state: j/k or arrows move, Enter or a click switch, 1-9 jump, x kill (asks), q, Esc or `b` close |
 | `1`..`9` | session by number, creation order |
 | `0` | previous session |
 | `d` | detach, session keeps running |
@@ -151,6 +154,43 @@ name <TAB> dir <TAB> cmd   create it running cmd
 
 The command is used only when the session has to be created, which is what
 makes `prefix+y` both "launch" and "go back".
+
+## Sidebar
+
+`prefix+b` opens a panel of sessions floating over the right edge of the
+screen. I wanted herdr's sidebar without its layout: nothing moves, the panel
+just covers the cells under it.
+
+```
+ ~/glass $ cargo test          ╭─ sessions · 1 waiting ─────╮
+ running 147 tests             │▌2   glass        ✻ waiting │
+ test kbd::reset ... ok        │ 1   main                   │
+ test keys::scan ... ok        │ 3 ● sluice ◆2    ✻ working │
+                               ├────────────────────────────┤
+                               │ j/k  ⏎ go  x kill  q close │
+                               ╰────────────────────────────╯
+```
+
+- A session shows the most urgent Claude among its windows: waiting, then
+  idle, then working. Sessions with a waiting agent sort to the top, and the
+  panel opens on the first one, so `prefix b` Enter takes you to whoever needs
+  you.
+- Rows keep their `prefix+1..9` number wherever they sort: `3` in the panel is
+  `prefix 3`.
+- `◆2` is the window count; `●` marks the session you are in.
+- j/k or the arrows move, Enter or a click switches, 1-9 jumps, `x` then `y`
+  kills a session, q, Esc or `b` (alone or after the prefix) closes. Killing the
+  session on screen keeps the panel open; closing it lands on another session.
+
+How it stays out of the way: while the panel is open the window stays
+attached, but its output is held back, so the screen under the panel never
+changes. Keys go to the panel. Closing it reattaches the window, and zmx's
+repaint covers the panel in one synchronized frame, with whatever the program
+printed meanwhile. The agent states refresh once a second while it is open.
+Closed, it costs nothing.
+
+A program that asks the terminal something while the panel is open (a cursor
+position, say) waits for its answer until the panel closes.
 
 ## Windows
 

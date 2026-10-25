@@ -257,6 +257,93 @@ impl Scanner {
 
 }
 
+/// What the sidebar reads from the terminal. It owns the input while it is
+/// open, in whatever encoding the program behind it left the terminal in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavKey {
+    Key(Key),
+    Up,
+    Down,
+    /// a left click, 1-based terminal cell
+    Click { col: usize, row: usize },
+    WheelUp,
+    WheelDown,
+}
+
+/// The presses in a chunk of input, in order, each with the offset just
+/// past it: a key that closes the panel leaves the rest of the chunk for the
+/// session. Releases, focus reports and anything else are dropped, as is a
+/// sequence cut off at the end: the panel only ever acts on whole keys.
+pub fn nav_keys(buf: &[u8]) -> Vec<(NavKey, usize)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < buf.len() {
+        if let Some((k, len)) = nav_sequence(&buf[i..]) {
+            i += len;
+            out.extend(k.map(|k| (k, i)));
+            continue;
+        }
+        match scan_one(&buf[i..]) {
+            Scan::Key { key, len, .. } => {
+                i += len;
+                out.push((NavKey::Key(key), i));
+            }
+            Scan::Release(len) | Scan::Other(len) => i += len,
+            Scan::Incomplete => break,
+        }
+    }
+    out
+}
+
+/// Arrows, legacy (`ESC [ A`), application (`ESC O A`) and kitty
+/// (`ESC [ 1 ; 1 : 3 A` for a release), and SGR mouse reports. `None` for
+/// anything else, which `scan_one` then reads. A release or a mouse report the
+/// panel has no use for is consumed with no key.
+fn nav_sequence(buf: &[u8]) -> Option<(Option<NavKey>, usize)> {
+    if buf.len() < 3 || buf[0] != 0x1b {
+        return None;
+    }
+    if buf[1] == b'O' {
+        return match buf[2] {
+            b'A' => Some((Some(NavKey::Up), 3)),
+            b'B' => Some((Some(NavKey::Down), 3)),
+            _ => None,
+        };
+    }
+    if buf[1] != b'[' {
+        return None;
+    }
+    let Csi::Done(len) = csi_len(buf) else {
+        return None;
+    };
+    let body = std::str::from_utf8(&buf[2..len - 1]).ok()?;
+    let fin = buf[len - 1];
+    if let Some(m) = body.strip_prefix('<') {
+        if fin != b'M' && fin != b'm' {
+            return None;
+        }
+        let f: Vec<usize> = m.split(';').filter_map(|x| x.parse().ok()).collect();
+        let [b, col, row] = f[..] else {
+            return Some((None, len));
+        };
+        // shift, alt and ctrl bits off; motion (32) stays and matches nothing
+        let k = match (b & !0b11100, fin) {
+            (0, b'M') => Some(NavKey::Click { col, row }),
+            (64, b'M') => Some(NavKey::WheelUp),
+            (65, b'M') => Some(NavKey::WheelDown),
+            _ => None,
+        };
+        return Some((k, len));
+    }
+    let arrow = match fin {
+        b'A' => NavKey::Up,
+        b'B' => NavKey::Down,
+        _ => return None,
+    };
+    let release = body.split(';').nth(1).and_then(|m| m.split(':').nth(1)) == Some("3");
+    Some(((!release).then_some(arrow), len))
+}
+
 /// Where `needle` first starts in `hay`.
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
     let mut at = 0;
@@ -553,6 +640,42 @@ mod tests {
             Event::Chord { key, .. } => Some(*key),
             _ => None,
         }
+    }
+
+    fn nav(buf: &[u8]) -> Vec<NavKey> {
+        nav_keys(buf).into_iter().map(|(k, _)| k).collect()
+    }
+
+    #[test]
+    fn the_sidebar_reads_keys_in_every_encoding() {
+        use NavKey::{Click, Down, Up, WheelDown, WheelUp};
+        let k = NavKey::Key;
+        // legacy bytes, then the same keys from kitty's "all keys as codes"
+        assert_eq!(
+            nav(b"jk\r\x1b"),
+            [k(Key::Char('j')), k(Key::Char('k')), k(Key::Ctrl('m')), k(Key::Esc)]
+        );
+        assert_eq!(
+            nav(b"\x1b[106u\x1b[106;1:3u\x1b[13u\x1b[27u"),
+            [k(Key::Char('j')), k(Key::Ctrl('m')), k(Key::Esc)],
+            "the release of j is no key"
+        );
+        // arrows: normal, application mode, kitty with a release
+        assert_eq!(nav(b"\x1b[A\x1bOB\x1b[1;1:3B\x1b[1;1B"), [Up, Down, Down]);
+        // SGR mouse: a left click, the wheel, and a motion report dropped
+        assert_eq!(
+            nav(b"\x1b[<0;80;3M\x1b[<0;80;3m\x1b[<64;1;1M\x1b[<65;1;1M\x1b[<32;5;5M"),
+            [Click { col: 80, row: 3 }, WheelUp, WheelDown]
+        );
+        // focus reports and a cut-off tail are not keys
+        assert_eq!(nav(b"\x1b[Iq\x1b[1"), [k(Key::Char('q'))]);
+    }
+
+    #[test]
+    fn each_sidebar_key_says_where_it_ends() {
+        let ends: Vec<usize> = nav_keys(b"\x01becho").iter().map(|(_, e)| *e).collect();
+        assert_eq!(&ends[..2], [1, 2], "what follows prefix+b is the session's");
+        assert_eq!(nav_keys(b"\x1b[A").last().unwrap().1, 3);
     }
 
     #[test]
