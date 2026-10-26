@@ -23,7 +23,15 @@ What it does not do, by design: splits or a status line inside the terminal. Tho
 
 ## Install
 
-You need [Rust](https://rustup.rs) to build it, and zmx and fzf to run it:
+With Homebrew, on macOS or Linux:
+
+```sh
+brew install rashedInt32/sluice/sluice
+```
+
+That brings zmx and fzf with it. `brew upgrade` keeps it current.
+
+Or build it from source. You need [Rust](https://rustup.rs) to build it, and zmx and fzf to run it:
 
 ```sh
 brew install neurosnap/tap/zmx fzf
@@ -31,7 +39,9 @@ git clone https://github.com/rashedInt32/sluice && cd sluice
 scripts/install.sh
 ```
 
-That builds the binary into `~/.cargo/bin`, puts the pickers in `~/.config/sluice/bin`, and writes `~/.config/sluice/config` if you do not have one. `~/.cargo/bin` has to be on your `PATH`; rustup puts it there, and the installer says so when it is not.
+That builds the binary into `~/.cargo/bin`, puts the pickers in `~/.config/sluice/bin`, and writes `~/.config/sluice/config` if you do not have one. `~/.cargo/bin` has to be on your `PATH`; rustup puts it there, and the installer says so when it is not. A picker in `~/.config/sluice/bin` takes the place of the one Homebrew installed, so you can edit your copy.
+
+Each [release](https://github.com/rashedInt32/sluice/releases) also has archives for macOS and Linux, laid out as a prefix: unpack one into `~/.local` and `bin/sluice` finds its pickers in `share/sluice/bin`.
 
 Then type `sluice`. With no sessions yet it opens the project picker: pick a folder and you are in a session named after it, with every prefix key working. The project picker lists every folder under your home until you tell it which ones to show ([Config](#config)).
 

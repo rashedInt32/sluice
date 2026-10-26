@@ -1,0 +1,153 @@
+# On a version tag: build sluice for macOS and Linux, publish a GitHub
+# Release with the archives and their SHA-256 sums, then point the Homebrew
+# formula in rashedInt32/homebrew-sluice at them.
+#
+# Each job holds only what it needs. The builds can read the repo and no
+# more. Only the release job can write to it. Only the tap job sees the
+# deploy key, and that key lives in the `homebrew` environment, which only
+# v* tags can use and which can write to the tap repo alone. Actions are
+# pinned to commits, as in ci.yml.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          # the oldest glibc GitHub still offers, so the binary runs on more
+          # than this year's distros
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master
+        with:
+          toolchain: "1.99.1"
+          targets: ${{ matrix.target }}
+
+      - name: Tag matches Cargo.toml
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a version tag: $TAG"; exit 1; }
+          want=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          [[ "v$want" == "$TAG" ]] || { echo "tag $TAG, Cargo.toml $want"; exit 1; }
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # laid out as a prefix: bin/sluice finds its pickers in
+          # ../share/sluice/bin, the way Homebrew installs them
+          name="sluice-${TAG#v}-$TARGET"
+          root="dist/$name"
+          mkdir -p "$root/bin" "$root/share/sluice/bin"
+          install -m 755 "target/$TARGET/release/sluice" "$root/bin/sluice"
+          for f in sessionizer worktree claude-here claude-picker agents; do
+            install -m 755 "scripts/$f" "$root/share/sluice/bin/$f"
+          done
+          install -m 644 config.example "$root/share/sluice/config.example"
+          install -m 644 README.md LICENSE "$root/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+
+      - name: Runs
+        if: matrix.target != 'x86_64-apple-darwin'
+        run: dist/sluice-*/bin/sluice --version
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*.tar.gz*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist
+          cat *.sha256 > SHA256SUMS
+          shasum -a 256 -c SHA256SUMS
+          # the notes are the commits since the previous tag
+          prev=$(git describe --tags --abbrev=0 "$TAG^" 2>/dev/null || true)
+          git log --format='- %s' ${prev:+"$prev.."}"$TAG" > notes.md
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "sluice ${TAG#v}" --notes-file notes.md \
+            *.tar.gz SHA256SUMS
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+    environment: homebrew
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Update the formula
+        env:
+          TAG: ${{ github.ref_name }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/tap_key"
+          (umask 077 && printf '%s\n' "$TAP_DEPLOY_KEY" > "$key")
+          trap 'rm -f "$key"' EXIT
+          # github.com's published host key, so the push cannot go elsewhere
+          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "$RUNNER_TEMP/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts -o StrictHostKeyChecking=yes"
+
+          git clone --depth 1 git@github.com:rashedInt32/homebrew-sluice.git tap
+          .github/formula.sh "${TAG#v}" dist > tap/Formula/sluice.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/sluice.rb
+          git diff --cached --quiet && { echo "formula already at $TAG"; exit 0; }
+          git commit -m "sluice ${TAG#v}"
+          git push origin HEAD

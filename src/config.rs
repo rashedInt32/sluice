@@ -9,7 +9,7 @@
 
 use crate::keys::{key_name, parse_key_name, Key};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -95,25 +95,45 @@ pub fn config_dir() -> PathBuf {
     crate::clients::home().join(".config").join("sluice")
 }
 
+/// A picker script that ships with sluice: the copy in `~/.config/sluice/bin`
+/// when there is one, as `install.sh` puts it, else the one a package put
+/// beside the binary, `<prefix>/share/sluice/bin` as Homebrew does. With
+/// neither, the config path, so a missing script is reported where
+/// `install.sh` would have put it.
+///
+/// The binary is looked for as it was started, then with links resolved. The
+/// first keeps Homebrew's `/opt/homebrew/share`, which outlives an upgrade,
+/// where the second would name one version's folder in the Cellar.
+fn script(name: &str) -> String {
+    let exe = std::env::current_exe().ok();
+    let real = exe.as_deref().and_then(|e| e.canonicalize().ok());
+    let exes: Vec<&Path> = exe.iter().chain(real.iter()).map(PathBuf::as_path).collect();
+    find_script(&config_dir().join("bin"), &exes, name)
+        .display()
+        .to_string()
+}
+
+fn find_script(user_bin: &Path, exes: &[&Path], name: &str) -> PathBuf {
+    let user = user_bin.join(name);
+    if user.exists() {
+        return user;
+    }
+    exes.iter()
+        .filter_map(|e| e.parent()?.parent())
+        .map(|prefix| prefix.join("share/sluice/bin").join(name))
+        .find(|p| p.exists())
+        .unwrap_or(user)
+}
+
 impl Config {
     pub fn defaults() -> Config {
-        let bin = config_dir().join("bin");
-        let sessionizer = bin.join("sessionizer").display().to_string();
+        let sessionizer = script("sessionizer");
         let mut binds = HashMap::new();
         binds.insert(Key::Char('f'), Action::Pick);
         binds.insert(Key::Char('s'), Action::Run(sessionizer.clone()));
-        binds.insert(
-            Key::Char('g'),
-            Action::Run(bin.join("worktree").display().to_string()),
-        );
-        binds.insert(
-            Key::Char('y'),
-            Action::Run(bin.join("claude-here").display().to_string()),
-        );
-        binds.insert(
-            Key::Char('u'),
-            Action::Run(bin.join("claude-picker").display().to_string()),
-        );
+        binds.insert(Key::Char('g'), Action::Run(script("worktree")));
+        binds.insert(Key::Char('y'), Action::Run(script("claude-here")));
+        binds.insert(Key::Char('u'), Action::Run(script("claude-picker")));
         binds.insert(Key::Char('0'), Action::Prev);
         for n in 1..=9usize {
             binds.insert(Key::Char(char::from(b'0' + n as u8)), Action::Jump(n));
@@ -355,6 +375,32 @@ fn describe_action(a: &Action) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scripts_come_from_the_config_then_the_package() {
+        let d = std::env::temp_dir().join(format!("sluice-script-{}", std::process::id()));
+        let user = d.join("config/bin");
+        let exe = d.join("prefix/bin/sluice");
+        let shipped = d.join("prefix/share/sluice/bin");
+        std::fs::create_dir_all(&user).unwrap();
+        std::fs::create_dir_all(&shipped).unwrap();
+        std::fs::write(shipped.join("worktree"), "").unwrap();
+        std::fs::write(shipped.join("sessionizer"), "").unwrap();
+        std::fs::write(user.join("sessionizer"), "").unwrap();
+
+        let link = d.join("elsewhere/bin/sluice");
+        let find = |name| find_script(&user, &[&exe], name);
+        assert_eq!(find("sessionizer"), user.join("sessionizer"), "the user's copy wins");
+        assert_eq!(find("worktree"), shipped.join("worktree"), "the package's otherwise");
+        assert_eq!(find("agents"), user.join("agents"), "neither: where install.sh puts it");
+        assert_eq!(find_script(&user, &[], "worktree"), user.join("worktree"));
+        assert_eq!(
+            find_script(&user, &[&link, &exe], "worktree"),
+            shipped.join("worktree"),
+            "a link's folder has none, the binary's does"
+        );
+        std::fs::remove_dir_all(&d).unwrap();
+    }
 
     #[test]
     fn defaults_cover_the_tmux_habits() {
