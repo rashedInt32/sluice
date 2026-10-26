@@ -18,8 +18,10 @@ cat <<EOF
 class Sluice < Formula
   desc "Tmux-style sessions and prefix keys on top of zmx, with raw PTY passthrough"
   homepage "https://github.com/rashedInt32/sluice"
-  version "$version"
   license "MIT"
+
+  depends_on "fzf"
+  depends_on "neurosnap/tap/zmx"
 
   on_macos do
     on_arm do
@@ -42,9 +44,6 @@ class Sluice < Formula
       sha256 "$(sum x86_64-unknown-linux-gnu)"
     end
   end
-
-  depends_on "fzf"
-  depends_on "neurosnap/tap/zmx"
 
   def install
     bin.install "bin/sluice"
