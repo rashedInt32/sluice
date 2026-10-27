@@ -2,7 +2,7 @@
 
 tmux-style prefix keys and session switching on top of [zmx](https://github.com/neurosnap/zmx), with raw PTY passthrough.
 
-https://github.com/user-attachments/assets/0bd26c84-4dce-4238-8e58-3af99c313cd8
+https://github.com/user-attachments/assets/84339a55-8f5d-4135-a42e-bb5e88b920f7
 
 I wanted to leave tmux without giving up the habits: `prefix+f` to pick a session, `prefix+1..9` to jump, `prefix+0` for the last one, a sessionizer on `prefix+s`, worktrees on `prefix+g`. tmux pays for those keys by parsing every byte of output into its own screen and re-emitting it. That is where images, the kitty keyboard protocol and clean truecolor get lost.
 
