@@ -27,9 +27,10 @@ wt_rows=$(printf '%s\n' "$wt_porcelain" | awk '
 ')
 wt_branches=$(printf '%s\n' "$wt_porcelain" | awk '
   /^branch /{b=$2; sub("refs/heads/","",b); print b}')
+# The list goes in through the environment: macOS awk refuses a newline in -v.
 branch_rows=$(git -C "$repo_root" for-each-ref --format='%(refname:short)' refs/heads \
-  | awk -v have="$wt_branches" '
-      BEGIN{ n=split(have, a, "\n"); for (i=1;i<=n;i++) seen[a[i]]=1 }
+  | have="$wt_branches" awk '
+      BEGIN{ n=split(ENVIRON["have"], a, "\n"); for (i=1;i<=n;i++) seen[a[i]]=1 }
       { if (!seen[$0]) print "+ "$0"\t"$0"\t" }')
 
 list=$(printf '%s\n%s\n' "$wt_rows" "$branch_rows" | sed '/^$/d')
@@ -43,6 +44,8 @@ sel=$(printf '%s\n' "$list" \
 
 query=$(printf '%s\n' "$sel" | sed -n '1p')
 match=$(printf '%s\n' "$sel" | sed -n '2p')
+# git's own output goes to $err too: it prints "HEAD is now at ..." on stdout,
+# and sluice reads the first line of stdout as the session to open.
 err=$(mktemp)
 fail() {
   [ -n "${SLUICE:-}" ] && printf '\033[?1049l' >/dev/tty
@@ -55,15 +58,15 @@ if [[ -n "$match" ]]; then
   if [[ -z "$path" ]]; then
     path="$wt_base/$branch"
     if [[ ! -d "$path" ]]; then
-      git -C "$repo_root" worktree add "$path" "$branch" 2>"$err" || fail
+      git -C "$repo_root" worktree add "$path" "$branch" >"$err" 2>&1 || fail
     fi
   fi
 else
   branch="$query"
   [[ -z "$branch" ]] && exit 1
   path="$wt_base/$branch"
-  if ! git -C "$repo_root" worktree add "$path" -b "$branch" 2>"$err"; then
-    git -C "$repo_root" worktree add "$path" "$branch" 2>>"$err" || fail
+  if ! git -C "$repo_root" worktree add "$path" -b "$branch" >"$err" 2>&1; then
+    git -C "$repo_root" worktree add "$path" "$branch" >>"$err" 2>&1 || fail
   fi
 fi
 rm -f "$err"
