@@ -2,7 +2,7 @@
 
 tmux-style prefix keys and session switching on top of [zmx](https://github.com/neurosnap/zmx), with raw PTY passthrough.
 
-![The session picker on prefix+f: sessions on top, opened on the current one, with the highlighted session's screen below](docs/picker.png)
+https://github.com/user-attachments/assets/0bd26c84-4dce-4238-8e58-3af99c313cd8
 
 I wanted to leave tmux without giving up the habits: `prefix+f` to pick a session, `prefix+1..9` to jump, `prefix+0` for the last one, a sessionizer on `prefix+s`, worktrees on `prefix+g`. tmux pays for those keys by parsing every byte of output into its own screen and re-emitting it. That is where images, the kitty keyboard protocol and clean truecolor get lost.
 
@@ -235,9 +235,11 @@ sluice handoff status
 
 While the marker is on and its pid is alive, sluice forwards every key untouched. A dead pid ends the handoff by itself, so a crashed program cannot leave the prefix stuck. loom.nvim does this automatically when `sluice = true`.
 
-## herdr sessions
+## sluice and herdr
 
-[herdr](https://herdr.dev) is an agent multiplexer with sessions of its own. sluice can give it one session of its own, so herdr never runs inside your other sessions and both live in the one terminal window:
+[herdr](https://herdr.dev) is a full workspace for coding agents: splits, tabs, a sidebar, many agents, remote machines. sluice is much smaller. It keeps the terminal as it is, and adds what I reach for between agents: the project picker on `prefix+s`, and one Claude per project on `prefix+y`. I use both.
+
+sluice can give herdr one session of its own, so herdr never runs inside your other sessions and both live in the one terminal window:
 
 ```sh
 sluice switch herdr:default -c "$PWD"   # herdr's default session; herdr:<name> for a named one
