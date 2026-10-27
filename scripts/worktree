@@ -81,4 +81,22 @@ fi
 session=$(printf '%s' "${repo_name}/${label}" | tr './:, ' '_____')
 # A trailing +<digits> would read as a window of another session.
 [[ "$session" =~ ^(.+)\+([0-9]+)$ ]] && session="${BASH_REMATCH[1]}_${BASH_REMATCH[2]}"
+
+# zmx names a session by its socket, and a socket path has a hard limit: 104
+# bytes on macOS, 108 on Linux, folder included. In macOS's long $TMPDIR that
+# leaves about 46 bytes for a name. A longer one keeps its start and gets a
+# hash of the whole, so the same branch always lands on the same session.
+# Three bytes stay free for a window's +<k>.
+export LC_ALL=C
+if [[ -n "${ZMX_DIR:-}" ]]; then zmx_dir=$ZMX_DIR
+elif [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then zmx_dir=$XDG_RUNTIME_DIR/zmx
+else zmx_dir=${TMPDIR:-/tmp}; zmx_dir="${zmx_dir%/}/zmx-$(id -u)"
+fi
+case "$(uname -s)" in Linux) sun=108 ;; *) sun=104 ;; esac
+max=$(( sun - ${#zmx_dir} - 2 - 3 ))
+(( max < 16 )) && max=16
+if (( ${#session} > max )); then
+  hash=$(printf '%08x' "$(printf '%s' "$session" | cksum | cut -d' ' -f1)" | cut -c1-6)
+  session="${session:0:max-7}-$hash"
+fi
 printf '%s\t%s\n' "$session" "$path"
