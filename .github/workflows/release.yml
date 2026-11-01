@@ -65,7 +65,7 @@ jobs:
           root="dist/$name"
           mkdir -p "$root/bin" "$root/share/sluice/bin"
           install -m 755 "target/$TARGET/release/sluice" "$root/bin/sluice"
-          for f in sessionizer worktree claude-here claude-picker agents; do
+          for f in sessionizer worktree claude-here claude-picker agents rex-sessions; do
             install -m 755 "scripts/$f" "$root/share/sluice/bin/$f"
           done
           install -m 644 config.example "$root/share/sluice/config.example"

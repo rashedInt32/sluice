@@ -253,6 +253,18 @@ Bound to a shell function named `herdr`, typing `herdr` in any session takes you
 herdr-command ~/.config/herdr/bin/herdr-at
 ```
 
+## sluice and Rex
+
+In [Rex](https://www.superlogical.com/rex) I keep Rex's own sessions and use sluice's session picker over them. `rex-sessions` lists every Rex session with the same look and keys as `prefix+f`: numbered in the order Rex's `prefix+1-9` jump uses, the session you are in marked, what its focused pane runs, and that pane's screen below. `ctrl-x` closes a session, never the one you are in.
+
+It prints the chosen session's id. Run it in a Rex floating layer and switch the app to the pick:
+
+```sh
+id=$(~/.config/sluice/bin/rex-sessions) && rex -C <client> do session.select session_id="$id"
+```
+
+In the session you are in, the focused pane is the picker's own layer, so pass the pane the key was pressed in as `SLUICE_REX_FROM` to preview that one instead.
+
 ## Whole sequences only
 
 The scanner consumes complete input sequences. A sequence split across two reads is held until the rest arrives; if nothing follows within 50 ms it was typed (legacy alt+[ or alt+] send just `ESC [` / `ESC ]`) and goes through as it came. Anything that is not a key press (a key release report, a focus change, a mouse report) is forwarded intact rather than picked apart. Getting this wrong leaks the tail of an escape sequence into the program as literal text: a release report shredded that way reaches Neovim as `97;5:3u`, whose `:` opens the command line and whose digits land in it.

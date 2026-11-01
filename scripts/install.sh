@@ -13,7 +13,7 @@ cargo_bin="${CARGO_HOME:-$HOME/.cargo}/bin"
 "$cargo_bin/sluice" --version >/dev/null
 bin="${XDG_CONFIG_HOME:-$HOME/.config}/sluice/bin"
 mkdir -p "$bin"
-for f in sessionizer worktree claude-here claude-picker agents; do
+for f in sessionizer worktree claude-here claude-picker agents rex-sessions; do
   install -m 755 "$here/scripts/$f" "$bin/$f"
 done
 cfg="${XDG_CONFIG_HOME:-$HOME/.config}/sluice/config"
